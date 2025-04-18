@@ -66,6 +66,7 @@ pub struct State {
     switched_search_mode: bool,
     search_mode: SearchMode,
     results_len: usize,
+    results_content: Vec<History>,
     accept: bool,
     keymap_mode: KeymapMode,
     prefix: bool,
@@ -94,6 +95,7 @@ impl State {
 
         self.results_state.select(0);
         self.results_len = results.len();
+        self.results_content = results.clone();
 
         if smart_sort {
             Ok(atuin_history::sort::sort(
@@ -208,6 +210,7 @@ impl State {
         let cursor_at_end_of_line =
             self.search.input.position() == UnicodeWidthStr::width(self.search.input.as_str());
         let cursor_at_start_of_line = self.search.input.position() == 0;
+        let empty_input = self.search.input.as_str().is_empty();
 
         // support ctrl-a prefix, like screen or tmux
         if !self.prefix
@@ -224,7 +227,22 @@ impl State {
             KeyCode::Esc if esc_allow_exit => Some(Self::handle_key_exit(settings)),
             KeyCode::Char('[') if ctrl && esc_allow_exit => Some(Self::handle_key_exit(settings)),
             KeyCode::Tab => Some(InputAction::Accept(self.results_state.selected())),
+            KeyCode::Right if empty_input => {
+                let selected_result = self.results_state.selected();
+                if let Some(result) = self.results_content.get(selected_result) {
+                    for c in result.command.chars() {
+                        self.search.input.insert(c);
+                    }
+                }
+                Some(InputAction::Continue)
+            }
             KeyCode::Right if cursor_at_end_of_line && settings.keys.accept_past_line_end => {
+                Some(InputAction::Accept(self.results_state.selected()))
+            }
+            KeyCode::Left if empty_input && settings.keys.accept_past_line_end => {
+                Some(InputAction::Accept(self.results_state.selected()))
+            }
+            KeyCode::Backspace if empty_input && settings.keys.accept_past_line_end => {
                 Some(InputAction::Accept(self.results_state.selected()))
             }
             KeyCode::Left if cursor_at_start_of_line && settings.keys.exit_past_line_start => {
@@ -1103,6 +1121,7 @@ pub async fn history(
         },
         engine: engines::engine(search_mode),
         results_len: 0,
+        results_content: Vec::new(),
         accept: false,
         keymap_mode: match settings.keymap_mode {
             KeymapMode::Auto => KeymapMode::Emacs,
@@ -1433,6 +1452,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len: 0,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::Auto,
             prefix: false,
