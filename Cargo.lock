@@ -221,7 +221,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atuin"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "arboard",
  "async-trait",
@@ -230,6 +230,7 @@ dependencies = [
  "atuin-daemon",
  "atuin-dotfiles",
  "atuin-history",
+ "atuin-kv",
  "atuin-scripts",
  "atuin-server",
  "atuin-server-postgres",
@@ -239,7 +240,7 @@ dependencies = [
  "colored",
  "crossterm",
  "eyre",
- "fs-err 2.11.0",
+ "fs-err",
  "futures-util",
  "fuzzy-matcher",
  "indicatif",
@@ -262,13 +263,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-tree",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.0",
  "uuid",
 ]
 
 [[package]]
 name = "atuin-client"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "async-trait",
  "atuin-common",
@@ -279,7 +280,7 @@ dependencies = [
  "crypto_secretbox",
  "directories",
  "eyre",
- "fs-err 2.11.0",
+ "fs-err",
  "futures",
  "generic-array",
  "hex",
@@ -323,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-common"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "base64 0.22.1",
  "directories",
@@ -343,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-daemon"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "atuin-client",
  "atuin-dotfiles",
@@ -362,7 +363,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tonic-types",
- "tower 0.4.13",
+ "tower 0.5.2",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -370,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-dotfiles"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -384,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-history"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "atuin-client",
  "crossterm",
@@ -396,8 +397,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "atuin-kv"
+version = "18.6.1"
+dependencies = [
+ "atuin-client",
+ "atuin-common",
+ "eyre",
+ "pretty_assertions",
+ "rmp",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "typed-builder",
+]
+
+[[package]]
 name = "atuin-scripts"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -419,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-server"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "argon2",
  "async-trait",
@@ -429,7 +446,7 @@ dependencies = [
  "axum-server",
  "config",
  "eyre",
- "fs-err 2.11.0",
+ "fs-err",
  "metrics",
  "metrics-exporter-prometheus",
  "postmark",
@@ -441,14 +458,14 @@ dependencies = [
  "serde_json",
  "time",
  "tokio",
- "tower 0.4.13",
+ "tower 0.5.2",
  "tower-http",
  "tracing",
 ]
 
 [[package]]
 name = "atuin-server-database"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "async-trait",
  "atuin-common",
@@ -460,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-server-postgres"
-version = "18.5.0"
+version = "18.6.1"
 dependencies = [
  "async-trait",
  "atuin-common",
@@ -545,7 +562,7 @@ checksum = "495c05f60d6df0093e8fb6e74aa5846a0ad06abaf96d76166283720bf740f8ab"
 dependencies = [
  "arc-swap",
  "bytes",
- "fs-err 3.1.0",
+ "fs-err",
  "http 1.3.1",
  "http-body 1.0.1",
  "hyper 1.6.0",
@@ -1480,15 +1497,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "fs-err"
-version = "2.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88a41f105fe1d5b6b34b2055e3dc59bb79b46b48b2040b9e6c7b4b5de097aa41"
-dependencies = [
- "autocfg",
 ]
 
 [[package]]
@@ -2574,9 +2582,9 @@ dependencies = [
 
 [[package]]
 name = "minspan"
-version = "0.1.2"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eea6e49e831ee0ee624f0435c357e452f6a68e194335f457a4d1551c09c9a300"
+checksum = "20219d20b3b77f743358539a182e339a6f682e09bb5675f870f320c4a1058c44"
 
 [[package]]
 name = "mio"
@@ -3135,9 +3143,9 @@ checksum = "350e9b48cbc6b0e028b0473b114454c6316e57336ee184ceab6e53f72c178b3e"
 
 [[package]]
 name = "postmark"
-version = "0.10.2"
+version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8c1982389836857cc378c3f46992bb6712464aa30567831ba0985495b0f6d83"
+checksum = "68343f3a4bf4afeae32c7f4bee549823034c6f754d7b718d8c2459aa1a15406e"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3146,6 +3154,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "time",
  "typed-builder",
  "url",
 ]
