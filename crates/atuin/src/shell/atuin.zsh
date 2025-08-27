@@ -15,7 +15,8 @@ zmodload zsh/datetime 2>/dev/null
 # you'd like to override this, then add your config after the $(atuin init zsh)
 # in your .zshrc
 _zsh_autosuggest_strategy_atuin() {
-    suggestion=$(ATUIN_QUERY="$1" atuin search --cmd-only --limit 1 --search-mode prefix)
+    # silence errors, since we don't want to spam the terminal prompt while typing.
+    suggestion=$(ATUIN_QUERY="$1" atuin search --cmd-only --limit 1 --search-mode prefix 2>/dev/null)
 }
 
 if [ -n "${ZSH_AUTOSUGGEST_STRATEGY:-}" ]; then
@@ -64,6 +65,7 @@ _atuin_search() {
     echo -n ${zle_bracketed_paste[1]} >/dev/tty
 
     if [[ -n $output ]]; then
+        local original_buffer=$BUFFER
         RBUFFER=""
         LBUFFER=$output
 
@@ -71,6 +73,10 @@ _atuin_search() {
         then
             LBUFFER=${LBUFFER#__atuin_accept__:}
             zle accept-line
+        elif [[ $LBUFFER == __atuin_chain_command__:* ]]
+        then
+            local new_command=${LBUFFER#__atuin_chain_command__:}
+            LBUFFER="$original_buffer $new_command"
         fi
     fi
 }

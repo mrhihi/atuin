@@ -134,7 +134,7 @@ impl From<Dialect> for interim::Dialect {
 /// Note that the parsing of this struct needs to be done before starting any
 /// multithreaded runtime, otherwise it will fail on most Unix systems.
 ///
-/// See: https://github.com/atuinsh/atuin/pull/1517#discussion_r1447516426
+/// See: <https://github.com/atuinsh/atuin/pull/1517#discussion_r1447516426>
 #[derive(Clone, Copy, Debug, Eq, PartialEq, DeserializeFromStr, Serialize)]
 pub struct Timezone(pub UtcOffset);
 impl fmt::Display for Timezone {
@@ -462,6 +462,7 @@ pub struct Settings {
     pub search_mode_shell_up_key_binding: Option<SearchMode>,
     pub shell_up_key_binding: bool,
     pub inline_height: u16,
+    pub inline_height_shell_up_key_binding: Option<u16>,
     pub invert: bool,
     pub show_preview: bool,
     pub max_preview_height: u16,
@@ -494,6 +495,7 @@ pub struct Settings {
     pub local_timeout: f64,
     pub enter_accept: bool,
     pub smart_sort: bool,
+    pub command_chaining: bool,
 
     #[serde(default)]
     pub stats: Stats,
@@ -799,6 +801,7 @@ impl Settings {
             .set_default("keymap_mode_shell", "auto")?
             .set_default("keymap_cursor", HashMap::<String, String>::new())?
             .set_default("smart_sort", false)?
+            .set_default("command_chaining", false)?
             .set_default("store_failed", true)?
             .set_default("daemon.sync_frequency", 300)?
             .set_default("daemon.enabled", false)?
@@ -871,6 +874,7 @@ impl Settings {
         settings.record_store_path = Self::expand_path(settings.record_store_path)?;
         settings.key_path = Self::expand_path(settings.key_path)?;
         settings.session_path = Self::expand_path(settings.session_path)?;
+        settings.daemon.socket_path = Self::expand_path(settings.daemon.socket_path)?;
 
         Ok(settings)
     }

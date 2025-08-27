@@ -2,7 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
-## [unreleased]
+## [18.8.0] - 2025-08-04
+
+### Bug Fixes
+
+- *(build)* Enable sqlite feature for sqlite server ([#2848](https://github.com/atuinsh/atuin/issues/2848))
+- Make login exit 1 if already logged in ([#2832](https://github.com/atuinsh/atuin/issues/2832))
+- Use transaction for idx consistency checking ([#2840](https://github.com/atuinsh/atuin/issues/2840))
+- Ensure the idx cache is cleaned on deletion, only insert if records are inserted ([#2841](https://github.com/atuinsh/atuin/issues/2841))
+
+
+### Features
+
+- Command chaining ([#2834](https://github.com/atuinsh/atuin/issues/2834))
+- Add info for 'official' plugins ([#2835](https://github.com/atuinsh/atuin/issues/2835))
+- Support multi part commands ([#2836](https://github.com/atuinsh/atuin/issues/2836)) ([#2837](https://github.com/atuinsh/atuin/issues/2837))
+- Add inline_height_shell_up_key_binding option ([#2817](https://github.com/atuinsh/atuin/issues/2817))
+- Add IDX_CACHE_ROLLOUT ([#2850](https://github.com/atuinsh/atuin/issues/2850))
+
+
+### Miscellaneous Tasks
+
+- Update to rust 1.88 ([#2815](https://github.com/atuinsh/atuin/issues/2815))
+
+
+### Nushell
+
+- Fix `get -i` deprecation ([#2829](https://github.com/atuinsh/atuin/issues/2829))
+
+
+## [18.7.1] - 2025-07-16
+
+### Bug Fixes
+
+- Add check for postgresql prefix ([#2825](https://github.com/atuinsh/atuin/issues/2825))
+
+
+### Miscellaneous Tasks
+
+- Update changelog
+
+
+## [18.7.0] - 2025-07-16
+
+### Bug Fixes
+
+- *(api)* Allow trailing slashes in sync_address ([#2760](https://github.com/atuinsh/atuin/issues/2760))
+- *(doctor)* Mention the required ble.sh version ([#2774](https://github.com/atuinsh/atuin/issues/2774))
+- *(search)* Prevent panic on malformed format strings ([#2776](https://github.com/atuinsh/atuin/issues/2776)) ([#2777](https://github.com/atuinsh/atuin/issues/2777))
+- Clarify that HISTFILE, if used, must be exported ([#2758](https://github.com/atuinsh/atuin/issues/2758))
+- Don't print errors in `zsh_autosuggest` helper ([#2780](https://github.com/atuinsh/atuin/issues/2780))
+- `atuin.nu` enchancements ([#2778](https://github.com/atuinsh/atuin/issues/2778))
+- Refuse "--dupkeep 0" ([#2807](https://github.com/atuinsh/atuin/issues/2807))
+
+
+### Features
+
+- Add sqlite server support for self-hosting ([#2770](https://github.com/atuinsh/atuin/issues/2770))
+
+
+### Miscellaneous Tasks
+
+- *(ci)* Install toolchain that matches rust-toolchain.toml ([#2759](https://github.com/atuinsh/atuin/issues/2759))
+- Allow setting script DB path ([#2750](https://github.com/atuinsh/atuin/issues/2750))
+
+
+## [18.6.1] - 2025-05-08
 
 ### Bug Fixes
 
