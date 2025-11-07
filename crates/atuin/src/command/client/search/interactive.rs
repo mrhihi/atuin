@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use atuin_common::utils::{self, Escapable as _};
+use atuin_common::{shell::Shell, utils::Escapable as _};
 use eyre::Result;
 use futures_util::FutureExt;
 use semver::Version;
@@ -17,7 +17,7 @@ use super::{
 };
 use atuin_client::{
     database::{Database, current_context},
-    history::{History, HistoryStats, store::HistoryStore},
+    history::{History, HistoryId, HistoryStats, store::HistoryStore},
     settings::{
         CursorStyle, ExitMode, FilterMode, KeymapMode, PreviewStrategy, SearchMode, Settings,
     },
@@ -54,12 +54,56 @@ const TAB_TITLES: [&str; 2] = ["Search", "Inspect"];
 
 pub enum InputAction {
     Accept(usize),
+    AcceptInspecting,
     Copy(usize),
     Delete(usize),
     ReturnOriginal,
     ReturnQuery,
     Continue,
     Redraw,
+}
+
+#[derive(Clone)]
+pub struct InspectingState {
+    current: Option<HistoryId>,
+    next: Option<HistoryId>,
+    previous: Option<HistoryId>,
+}
+
+impl InspectingState {
+    pub fn move_to_previous(&mut self) {
+        let previous = self.previous.clone();
+        self.reset();
+        self.current = previous;
+    }
+
+    pub fn move_to_next(&mut self) {
+        let next = self.next.clone();
+        self.reset();
+        self.current = next;
+    }
+
+    pub fn reset(&mut self) {
+        self.current = None;
+        self.next = None;
+        self.previous = None;
+    }
+}
+
+pub fn to_compactness(f: &Frame, settings: &Settings) -> Compactness {
+    if match settings.style {
+        atuin_client::settings::Style::Auto => f.area().height < 14,
+        atuin_client::settings::Style::Compact => true,
+        atuin_client::settings::Style::Full => false,
+    } {
+        if settings.auto_hide_height != 0 && f.area().height <= settings.auto_hide_height {
+            Compactness::Ultracompact
+        } else {
+            Compactness::Compact
+        }
+    } else {
+        Compactness::Full
+    }
 }
 
 #[allow(clippy::struct_field_names)]
@@ -77,14 +121,23 @@ pub struct State {
     current_cursor: Option<CursorStyle>,
     tab_index: usize,
 
+    pub inspecting_state: InspectingState,
+
     search: SearchState,
     engine: Box<dyn SearchEngine>,
     now: Box<dyn Fn() -> OffsetDateTime + Send>,
 }
 
 #[derive(Clone, Copy)]
+pub enum Compactness {
+    Ultracompact,
+    Compact,
+    Full,
+}
+
+#[derive(Clone, Copy)]
 struct StyleState {
-    compact: bool,
+    compactness: Compactness,
     invert: bool,
     inner_width: usize,
 }
@@ -97,6 +150,11 @@ impl State {
     ) -> Result<Vec<History>> {
         let results = self.engine.query(&self.search, db).await?;
 
+        self.inspecting_state = InspectingState {
+            current: None,
+            next: None,
+            previous: None,
+        };
         self.results_state.select(0);
         self.results_len = results.len();
         self.results_content = results.clone();
@@ -171,11 +229,11 @@ impl State {
         }
         .or_else(|| self.current_cursor.map(|_| CursorStyle::DefaultUserShape));
 
-        if cursor_style != self.current_cursor {
-            if let Some(style) = cursor_style {
-                self.current_cursor = cursor_style;
-                let _ = execute!(stdout(), Self::cast_cursor_style(style));
-            }
+        if cursor_style != self.current_cursor
+            && let Some(style) = cursor_style
+        {
+            self.current_cursor = cursor_style;
+            let _ = execute!(stdout(), Self::cast_cursor_style(style));
         }
     }
 
@@ -230,7 +288,13 @@ impl State {
             KeyCode::Char('c' | 'g') if ctrl => Some(InputAction::ReturnOriginal),
             KeyCode::Esc if esc_allow_exit => Some(Self::handle_key_exit(settings)),
             KeyCode::Char('[') if ctrl && esc_allow_exit => Some(Self::handle_key_exit(settings)),
-            KeyCode::Tab => Some(InputAction::Accept(self.results_state.selected())),
+            KeyCode::Tab => match self.tab_index {
+                0 => Some(InputAction::Accept(self.results_state.selected())),
+
+                1 => Some(InputAction::AcceptInspecting),
+
+                _ => panic!("invalid tab index on input"),
+            },
             KeyCode::Right if empty_input => {
                 let selected_result = self.results_state.selected();
                 if let Some(result) = self.results_content.get(selected_result) {
@@ -240,9 +304,6 @@ impl State {
                 }
                 Some(InputAction::Continue)
             }
-            KeyCode::Right if cursor_at_end_of_line && settings.keys.accept_past_line_end => {
-                Some(InputAction::Accept(self.results_state.selected()))
-            }
             KeyCode::Left if empty_input && settings.keys.accept_past_line_end => {
                 Some(InputAction::Accept(self.results_state.selected()))
             }
@@ -251,6 +312,11 @@ impl State {
             }
             KeyCode::Left if cursor_at_start_of_line && settings.keys.exit_past_line_start => {
                 Some(Self::handle_key_exit(settings))
+            }
+            KeyCode::Backspace
+                if cursor_at_start_of_line && settings.keys.accept_with_backspace =>
+            {
+                Some(InputAction::Accept(self.results_state.selected()))
             }
             KeyCode::Char('o') if ctrl => {
                 self.tab_index = (self.tab_index + 1) % TAB_TITLES.len();
@@ -387,6 +453,11 @@ impl State {
                     self.set_keymap_cursor(settings, "vim_insert");
                     self.keymap_mode = KeymapMode::VimInsert;
                     return InputAction::Continue;
+                }
+                KeyCode::Char(c @ '1'..='9') => {
+                    return c.to_digit(10).map_or(InputAction::Continue, |c| {
+                        InputAction::Accept(self.results_state.selected() + c as usize)
+                    });
                 }
                 KeyCode::Char(_) if !ctrl => {
                     return InputAction::Continue;
@@ -537,6 +608,7 @@ impl State {
 
     fn scroll_down(&mut self, scroll_len: usize) {
         let i = self.results_state.selected().saturating_sub(scroll_len);
+        self.inspecting_state.reset();
         self.results_state.select(i);
     }
 
@@ -544,6 +616,7 @@ impl State {
         let i = self.results_state.selected() + scroll_len;
         self.results_state
             .select(i.min(self.results_len.saturating_sub(1)));
+        self.inspecting_state.reset();
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -553,7 +626,7 @@ impl State {
         results: &[History],
         selected: usize,
         tab_index: usize,
-        compact: bool,
+        compactness: Compactness,
         border_size: u16,
         preview_width: u16,
     ) -> u16 {
@@ -613,14 +686,13 @@ impl State {
             }) + border_size * 2
         } else if settings.show_preview && settings.preview.strategy == PreviewStrategy::Fixed {
             settings.max_preview_height + border_size * 2
-        } else if compact || tab_index == 1 {
+        } else if !matches!(compactness, Compactness::Full) || tab_index == 1 {
             0
         } else {
             1
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::bool_to_int_with_if)]
     #[allow(clippy::too_many_lines)]
     fn draw(
@@ -628,33 +700,31 @@ impl State {
         f: &mut Frame,
         results: &[History],
         stats: Option<HistoryStats>,
+        inspecting: Option<&History>,
         settings: &Settings,
         theme: &Theme,
     ) {
-        let compact = match settings.style {
-            atuin_client::settings::Style::Auto => f.area().height < 14,
-            atuin_client::settings::Style::Compact => true,
-            atuin_client::settings::Style::Full => false,
-        };
+        let compactness = to_compactness(f, settings);
         let invert = settings.invert;
-        let border_size = if compact { 0 } else { 1 };
+        let border_size = match compactness {
+            Compactness::Full => 1,
+            _ => 0,
+        };
         let preview_width = f.area().width - 2;
         let preview_height = Self::calc_preview_height(
             settings,
             results,
             self.results_state.selected(),
             self.tab_index,
-            compact,
+            compactness,
             border_size,
             preview_width,
         );
-        let show_help = settings.show_help && (!compact || f.area().height > 1);
+        let show_help =
+            settings.show_help && (matches!(compactness, Compactness::Full) || f.area().height > 1);
         // This is an OR, as it seems more likely for someone to wish to override
         // tabs unexpectedly being missed, than unexpectedly present.
-        let hide_extra = settings.auto_hide_height != 0
-            && compact
-            && f.area().height <= settings.auto_hide_height;
-        let show_tabs = settings.show_tabs && !hide_extra;
+        let show_tabs = settings.show_tabs && !matches!(compactness, Compactness::Ultracompact);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(0)
@@ -668,22 +738,23 @@ impl State {
                         Constraint::Length(if show_tabs { 1 } else { 0 }), // tabs
                         Constraint::Length(if show_help { 1 } else { 0 }), // header (sic)
                     ]
-                } else if hide_extra {
-                    [
-                        Constraint::Length(if show_help { 1 } else { 0 }), // header
-                        Constraint::Length(0),                             // tabs
-                        Constraint::Min(1),                                // results list
-                        Constraint::Length(0),
-                        Constraint::Length(0),
-                    ]
                 } else {
-                    [
-                        Constraint::Length(if show_help { 1 } else { 0 }), // header
-                        Constraint::Length(if show_tabs { 1 } else { 0 }), // tabs
-                        Constraint::Min(1),                                // results list
-                        Constraint::Length(1 + border_size),               // input
-                        Constraint::Length(preview_height),                // preview
-                    ]
+                    match compactness {
+                        Compactness::Ultracompact => [
+                            Constraint::Length(if show_help { 1 } else { 0 }), // header
+                            Constraint::Length(0),                             // tabs
+                            Constraint::Min(1),                                // results list
+                            Constraint::Length(0),
+                            Constraint::Length(0),
+                        ],
+                        _ => [
+                            Constraint::Length(if show_help { 1 } else { 0 }), // header
+                            Constraint::Length(if show_tabs { 1 } else { 0 }), // tabs
+                            Constraint::Min(1),                                // results list
+                            Constraint::Length(1 + border_size),               // input
+                            Constraint::Length(preview_height),                // preview
+                        ],
+                    }
                 }
                 .as_ref(),
             )
@@ -705,13 +776,13 @@ impl State {
                 .block(Block::default().borders(Borders::NONE))
                 .select(self.tab_index)
                 .style(Style::default())
-                .highlight_style(Style::default().bold().white().on_black());
+                .highlight_style(theme.as_style(Meaning::Important));
 
             f.render_widget(tabs, tabs_chunk);
         }
 
         let style = StyleState {
-            compact,
+            compactness,
             invert,
             inner_width: input_chunk.width.into(),
         };
@@ -737,15 +808,18 @@ impl State {
         let stats_tab = self.build_stats(theme);
         f.render_widget(stats_tab, header_chunks[2]);
 
-        let indicator: String = if !hide_extra {
-            " > ".to_string()
-        } else if self.switched_search_mode {
-            format!("S{}>", self.search_mode.as_str().chars().next().unwrap())
-        } else {
-            format!(
-                "{}> ",
-                self.search.filter_mode.as_str().chars().next().unwrap()
-            )
+        let indicator: String = match compactness {
+            Compactness::Ultracompact => {
+                if self.switched_search_mode {
+                    format!("S{}>", self.search_mode.as_str().chars().next().unwrap())
+                } else {
+                    format!(
+                        "{}> ",
+                        self.search.filter_mode.as_str().chars().next().unwrap()
+                    )
+                }
+            }
+            _ => " > ".to_string(),
         };
 
         match self.tab_index {
@@ -762,6 +836,7 @@ impl State {
                     indicator.as_str(),
                     theme,
                     history_highlighter,
+                    settings.show_numeric_shortcuts,
                 );
                 f.render_stateful_widget(results_list, results_list_chunk, &mut self.results_state);
             }
@@ -779,11 +854,16 @@ impl State {
                         .alignment(Alignment::Center);
                     f.render_widget(message, results_list_chunk);
                 } else {
+                    let inspecting = match inspecting {
+                        Some(inspecting) => inspecting,
+                        None => &results[self.results_state.selected()],
+                    };
                     super::inspector::draw(
                         f,
                         results_list_chunk,
-                        &results[self.results_state.selected()],
+                        inspecting,
                         &stats.expect("Drawing inspector, but no stats"),
+                        settings,
                         theme,
                         settings.timezone,
                     );
@@ -804,40 +884,55 @@ impl State {
             }
         }
 
-        if !hide_extra {
-            let input = self.build_input(style);
-            f.render_widget(input, input_chunk);
-
-            let preview_width = if compact {
-                preview_width
-            } else {
-                preview_width - 2
+        if !matches!(compactness, Compactness::Ultracompact) {
+            let preview_width = match compactness {
+                Compactness::Full => preview_width - 2,
+                _ => preview_width,
             };
             let preview = self.build_preview(
                 results,
-                compact,
+                compactness,
                 preview_width,
                 preview_chunk.width.into(),
                 theme,
             );
-            f.render_widget(preview, preview_chunk);
-
-            let extra_width = UnicodeWidthStr::width(self.search.input.substring());
-
-            let cursor_offset = if compact { 0 } else { 1 };
-            f.set_cursor_position((
-                // Put cursor past the end of the input text
-                input_chunk.x + extra_width as u16 + PREFIX_LENGTH + 1 + cursor_offset,
-                input_chunk.y + cursor_offset,
-            ));
+            self.draw_preview(f, style, input_chunk, compactness, preview_chunk, preview);
         }
     }
 
-    fn build_title(&self, theme: &Theme) -> Paragraph {
+    #[allow(clippy::cast_possible_truncation)]
+    fn draw_preview(
+        &self,
+        f: &mut Frame,
+        style: StyleState,
+        input_chunk: Rect,
+        compactness: Compactness,
+        preview_chunk: Rect,
+        preview: Paragraph,
+    ) {
+        let input = self.build_input(style);
+        f.render_widget(input, input_chunk);
+
+        f.render_widget(preview, preview_chunk);
+
+        let extra_width = UnicodeWidthStr::width(self.search.input.substring());
+
+        let cursor_offset = match compactness {
+            Compactness::Full => 1,
+            _ => 0,
+        };
+        f.set_cursor_position((
+            // Put cursor past the end of the input text
+            input_chunk.x + extra_width as u16 + PREFIX_LENGTH + 1 + cursor_offset,
+            input_chunk.y + cursor_offset,
+        ));
+    }
+
+    fn build_title(&self, theme: &Theme) -> Paragraph<'_> {
         let title = if self.update_needed.is_some() {
             let error_style: Style = theme.get_error().into();
             Paragraph::new(Text::from(Span::styled(
-                format!("Atuin v{VERSION} - UPGRADE"),
+                format!("Atuin v{VERSION} - UPDATE"),
                 error_style.add_modifier(Modifier::BOLD),
             )))
         } else {
@@ -851,7 +946,7 @@ impl State {
     }
 
     #[allow(clippy::unused_self)]
-    fn build_help(&self, settings: &Settings, theme: &Theme) -> Paragraph {
+    fn build_help(&self, settings: &Settings, theme: &Theme) -> Paragraph<'_> {
         match self.tab_index {
             // search
             0 => Paragraph::new(Text::from(Line::from(vec![
@@ -889,7 +984,7 @@ impl State {
         .alignment(Alignment::Center)
     }
 
-    fn build_stats(&self, theme: &Theme) -> Paragraph {
+    fn build_stats(&self, theme: &Theme) -> Paragraph<'_> {
         Paragraph::new(Text::from(Span::raw(format!(
             "history count: {}",
             self.history_count,
@@ -898,6 +993,7 @@ impl State {
         .alignment(Alignment::Right)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_results_list<'a>(
         style: StyleState,
         results: &'a [History],
@@ -906,6 +1002,7 @@ impl State {
         indicator: &'a str,
         theme: &'a Theme,
         history_highlighter: HistoryHighlighter<'a>,
+        show_numeric_shortcuts: bool,
     ) -> HistoryList<'a> {
         let results_list = HistoryList::new(
             results,
@@ -915,27 +1012,31 @@ impl State {
             indicator,
             theme,
             history_highlighter,
+            show_numeric_shortcuts,
         );
 
-        if style.compact {
-            results_list
-        } else if style.invert {
-            results_list.block(
-                Block::default()
-                    .borders(Borders::LEFT | Borders::RIGHT)
-                    .border_type(BorderType::Rounded)
-                    .title(format!("{:─>width$}", "", width = style.inner_width - 2)),
-            )
-        } else {
-            results_list.block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-                    .border_type(BorderType::Rounded),
-            )
+        match style.compactness {
+            Compactness::Full => {
+                if style.invert {
+                    results_list.block(
+                        Block::default()
+                            .borders(Borders::LEFT | Borders::RIGHT)
+                            .border_type(BorderType::Rounded)
+                            .title(format!("{:─>width$}", "", width = style.inner_width - 2)),
+                    )
+                } else {
+                    results_list.block(
+                        Block::default()
+                            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                            .border_type(BorderType::Rounded),
+                    )
+                }
+            }
+            _ => results_list,
         }
     }
 
-    fn build_input(&self, style: StyleState) -> Paragraph {
+    fn build_input(&self, style: StyleState) -> Paragraph<'_> {
         /// Max width of the UI box showing current mode
         const MAX_WIDTH: usize = 14;
         let (pref, mode) = if self.switched_search_mode {
@@ -948,32 +1049,35 @@ impl State {
         debug_assert!(mode_width >= mode.len(), "mode name '{mode}' is too long!");
         let input = format!("[{pref}{mode:^mode_width$}] {}", self.search.input.as_str(),);
         let input = Paragraph::new(input);
-        if style.compact {
-            input
-        } else if style.invert {
-            input.block(
-                Block::default()
-                    .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP)
-                    .border_type(BorderType::Rounded),
-            )
-        } else {
-            input.block(
-                Block::default()
-                    .borders(Borders::LEFT | Borders::RIGHT)
-                    .border_type(BorderType::Rounded)
-                    .title(format!("{:─>width$}", "", width = style.inner_width - 2)),
-            )
+        match style.compactness {
+            Compactness::Full => {
+                if style.invert {
+                    input.block(
+                        Block::default()
+                            .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP)
+                            .border_type(BorderType::Rounded),
+                    )
+                } else {
+                    input.block(
+                        Block::default()
+                            .borders(Borders::LEFT | Borders::RIGHT)
+                            .border_type(BorderType::Rounded)
+                            .title(format!("{:─>width$}", "", width = style.inner_width - 2)),
+                    )
+                }
+            }
+            _ => input,
         }
     }
 
     fn build_preview(
         &self,
         results: &[History],
-        compact: bool,
+        compactness: Compactness,
         preview_width: u16,
         chunk_width: usize,
         theme: &Theme,
-    ) -> Paragraph {
+    ) -> Paragraph<'_> {
         let selected = self.results_state.selected();
         let command = if results.is_empty() {
             String::new()
@@ -992,15 +1096,14 @@ impl State {
                 .join("\n")
         };
 
-        if compact {
-            Paragraph::new(command).style(theme.as_style(Meaning::Annotation))
-        } else {
-            Paragraph::new(command).block(
+        match compactness {
+            Compactness::Full => Paragraph::new(command).block(
                 Block::default()
                     .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
                     .border_type(BorderType::Rounded)
                     .title(format!("{:─>width$}", "", width = chunk_width - 2)),
-            )
+            ),
+            _ => Paragraph::new(command).style(theme.as_style(Meaning::Annotation)),
         }
     }
 }
@@ -1094,6 +1197,16 @@ pub async fn history(
         settings.inline_height
     };
 
+    // Use fullscreen mode if the inline height doesn't fit in the terminal,
+    // this will preserve the scroll position upon exit
+    let inline_height = if let Ok(size) = terminal::size()
+        && inline_height >= size.1
+    {
+        0
+    } else {
+        inline_height
+    };
+
     let stdout = Stdout::new(inline_height > 0)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::with_options(
@@ -1112,7 +1225,7 @@ pub async fn history(
     // Check if this is a command chaining scenario
     let is_command_chaining = if settings.command_chaining {
         let trimmed = original_query.trim_end();
-        trimmed.ends_with("&&") || trimmed.ends_with("||")
+        trimmed.ends_with("&&") || trimmed.ends_with('|')
     } else {
         false
     };
@@ -1149,6 +1262,11 @@ pub async fn history(
         switched_search_mode: false,
         search_mode,
         tab_index: 0,
+        inspecting_state: InspectingState {
+            current: None,
+            next: None,
+            previous: None,
+        },
         search: SearchState {
             input,
             filter_mode: settings
@@ -1186,9 +1304,19 @@ pub async fn history(
     }
 
     let mut stats: Option<HistoryStats> = None;
+    let mut inspecting: Option<History> = None;
     let accept;
     let result = 'render: loop {
-        terminal.draw(|f| app.draw(f, &results, stats.clone(), settings, theme))?;
+        terminal.draw(|f| {
+            app.draw(
+                f,
+                &results,
+                stats.clone(),
+                inspecting.as_ref(),
+                settings,
+                theme,
+            );
+        })?;
 
         let initial_input = app.search.input.as_str().to_owned();
         let initial_filter_mode = app.search.filter_mode;
@@ -1209,6 +1337,7 @@ pub async fn history(
                                 app.results_len -= 1;
                                 let selected = app.results_state.selected();
                                 if selected == app.results_len {
+                                    app.inspecting_state.reset();
                                     app.results_state.select(selected - 1);
                                 }
 
@@ -1225,7 +1354,7 @@ pub async fn history(
                             },
                             InputAction::Redraw => {
                                 terminal.clear()?;
-                                terminal.draw(|f| app.draw(f, &results, stats.clone(), settings, theme))?;
+                                terminal.draw(|f| app.draw(f, &results, stats.clone(), inspecting.as_ref(), settings, theme))?;
                             },
                             r => {
                                 accept = app.accept;
@@ -1250,11 +1379,39 @@ pub async fn history(
             results = app.query_results(&mut db, settings.smart_sort).await?;
         }
 
+        let inspecting_id = app.inspecting_state.clone().current;
+        // If inspecting ID is not the current inspecting History, update it.
+        match inspecting_id {
+            Some(inspecting_id) => {
+                if inspecting.is_none() || inspecting_id != inspecting.clone().unwrap().id {
+                    inspecting = db.load(inspecting_id.0.as_str()).await?;
+                }
+            }
+            _ => {
+                inspecting = None;
+            }
+        }
+
         stats = if app.tab_index == 0 {
             None
         } else if !results.is_empty() {
-            let selected = results[app.results_state.selected()].clone();
-            Some(db.stats(&selected).await?)
+            // If we have stats, then we can indicate next available IDs. This avoids passing
+            // around a database object, or a full stats object.
+            let selected = match inspecting.clone() {
+                Some(insp) => insp,
+                None => results[app.results_state.selected()].clone(),
+            };
+            let stats = db.stats(&selected).await?;
+            app.inspecting_state.current = Some(selected.id);
+            app.inspecting_state.previous = match stats.previous.clone() {
+                Some(p) => Some(p.id),
+                _ => None,
+            };
+            app.inspecting_state.next = match stats.next.clone() {
+                Some(p) => Some(p.id),
+                _ => None,
+            };
+            Some(stats)
         } else {
             None
         };
@@ -1266,17 +1423,37 @@ pub async fn history(
         terminal.clear()?;
     }
 
+    let accept = accept
+        && matches!(
+            Shell::from_env(),
+            Shell::Zsh | Shell::Fish | Shell::Bash | Shell::Xonsh | Shell::Nu | Shell::Powershell
+        );
+
+    let accept_prefix = "__atuin_accept__:";
+
     match result {
+        InputAction::AcceptInspecting => {
+            match inspecting {
+                Some(result) => {
+                    let mut command = result.command;
+
+                    if accept {
+                        command = String::from(accept_prefix) + &command;
+                    }
+
+                    // index is in bounds so we return that entry
+                    Ok(command)
+                }
+                None => Ok(String::new()),
+            }
+        }
         InputAction::Accept(index) if index < results.len() => {
             let mut command = results.swap_remove(index).command;
-            if accept
-                && (utils::is_zsh() || utils::is_fish() || utils::is_bash() || utils::is_xonsh())
-            {
-                if is_command_chaining {
-                    command = String::from("__atuin_chain_command__:") + &command;
-                } else {
-                    command = String::from("__atuin_accept__:") + &command;
-                }
+
+            if is_command_chaining {
+                command = format!("{} {}", original_query.trim_end(), command);
+            } else if accept {
+                command = String::from(accept_prefix) + &command;
             }
 
             // index is in bounds so we return that entry
@@ -1331,7 +1508,7 @@ mod tests {
     use crate::command::client::search::engines::{self, SearchState};
     use crate::command::client::search::history_list::ListState;
 
-    use super::State;
+    use super::{Compactness, InspectingState, State};
 
     #[test]
     #[allow(clippy::too_many_lines)]
@@ -1400,7 +1577,7 @@ mod tests {
             &results,
             0_usize,
             0_usize,
-            false,
+            Compactness::Full,
             1,
             80,
         );
@@ -1410,7 +1587,7 @@ mod tests {
             &results,
             1_usize,
             0_usize,
-            false,
+            Compactness::Full,
             1,
             80,
         );
@@ -1420,7 +1597,7 @@ mod tests {
             &results,
             2_usize,
             0_usize,
-            false,
+            Compactness::Full,
             1,
             80,
         );
@@ -1430,7 +1607,7 @@ mod tests {
             &results,
             0_usize,
             0_usize,
-            false,
+            Compactness::Full,
             1,
             66,
         );
@@ -1440,7 +1617,7 @@ mod tests {
             &results,
             2_usize,
             0_usize,
-            false,
+            Compactness::Full,
             1,
             80,
         );
@@ -1450,7 +1627,7 @@ mod tests {
             &results,
             1_usize,
             0_usize,
-            false,
+            Compactness::Full,
             1,
             80,
         );
@@ -1460,7 +1637,7 @@ mod tests {
             &results,
             1_usize,
             0_usize,
-            false,
+            Compactness::Full,
             1,
             20,
         );
@@ -1470,7 +1647,7 @@ mod tests {
             &results,
             1_usize,
             0_usize,
-            false,
+            Compactness::Full,
             1,
             20,
         );
@@ -1503,6 +1680,11 @@ mod tests {
             prefix: false,
             current_cursor: None,
             tab_index: 0,
+            inspecting_state: InspectingState {
+                current: None,
+                next: None,
+                previous: None,
+            },
             search: SearchState {
                 input: String::new().into(),
                 filter_mode: FilterMode::Directory,
@@ -1520,5 +1702,122 @@ mod tests {
 
         state.scroll_up(1);
         state.scroll_down(1);
+    }
+
+    #[test]
+    fn test_accept_keybindings() {
+        use atuin_client::settings::Keys;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut settings = Settings::utc();
+        settings.keys = Keys {
+            scroll_exits: true,
+            exit_past_line_start: false,
+            accept_past_line_end: true,
+            accept_past_line_start: false,
+            accept_with_backspace: false,
+            prefix: "a".to_string(),
+        };
+
+        let mut state = State {
+            history_count: 1,
+            update_needed: None,
+            results_state: ListState::default(),
+            switched_search_mode: false,
+            search_mode: SearchMode::Fuzzy,
+            results_len: 1,
+            accept: false,
+            keymap_mode: KeymapMode::Emacs,
+            prefix: false,
+            current_cursor: None,
+            tab_index: 0,
+            inspecting_state: InspectingState {
+                current: None,
+                next: None,
+                previous: None,
+            },
+            search: SearchState {
+                input: String::new().into(),
+                filter_mode: FilterMode::Global,
+                context: Context {
+                    session: String::new(),
+                    cwd: String::new(),
+                    hostname: String::new(),
+                    host_id: String::new(),
+                    git_root: None,
+                },
+            },
+            engine: engines::engine(SearchMode::Fuzzy),
+            now: Box::new(OffsetDateTime::now_utc),
+        };
+
+        let tab_event = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        let result = state.handle_key_input(&settings, &tab_event);
+        assert!(
+            matches!(result, super::InputAction::Accept(_)),
+            "Tab should always accept"
+        );
+
+        // Test left arrow with accept_past_line_start disabled (should continue)
+        let left_event = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        let result = state.handle_key_input(&settings, &left_event);
+        assert!(
+            matches!(result, super::InputAction::Continue),
+            "Left arrow should continue when disabled"
+        );
+
+        // Test left arrow with accept_past_line_start enabled (should accept at start of line)
+        settings.keys.accept_past_line_start = true;
+        let result = state.handle_key_input(&settings, &left_event);
+        assert!(
+            matches!(result, super::InputAction::Accept(_)),
+            "Left arrow should accept at start of line when enabled"
+        );
+        settings.keys.accept_past_line_start = false;
+
+        let backspace_event = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+        let result = state.handle_key_input(&settings, &backspace_event);
+        assert!(
+            matches!(result, super::InputAction::Continue),
+            "Backspace should continue when disabled"
+        );
+
+        settings.keys.accept_with_backspace = true;
+        let result = state.handle_key_input(&settings, &backspace_event);
+        assert!(
+            matches!(result, super::InputAction::Accept(_)),
+            "Backspace should accept at start of line when enabled"
+        );
+
+        state.search.input.insert('t');
+        state.search.input.insert('e');
+        state.search.input.insert('s');
+        state.search.input.insert('t');
+        state.search.input.end();
+
+        let right_event = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        let result = state.handle_key_input(&settings, &right_event);
+        assert!(
+            matches!(result, super::InputAction::Accept(_)),
+            "Right arrow should accept at end of line when enabled"
+        );
+
+        settings.keys.accept_past_line_start = true;
+        let left_event = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        let result = state.handle_key_input(&settings, &left_event);
+        assert!(
+            matches!(result, super::InputAction::Continue),
+            "Left arrow should continue and end of line, even when enabled"
+        );
+        settings.keys.accept_past_line_start = false;
+
+        settings.keys.accept_with_backspace = true;
+        let backspace_event = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+        let result = state.handle_key_input(&settings, &backspace_event);
+        assert!(
+            matches!(result, super::InputAction::Continue),
+            "Backspace should continue at end of line, even when enabled"
+        );
+        settings.keys.accept_with_backspace = false;
     }
 }
