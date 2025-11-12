@@ -271,6 +271,7 @@ impl State {
         let esc_allow_exit = !(self.tab_index == 0 && self.keymap_mode == KeymapMode::VimInsert);
         let cursor_at_end_of_line =
             self.search.input.position() == UnicodeWidthStr::width(self.search.input.as_str());
+        if cursor_at_end_of_line {};
         let cursor_at_start_of_line = self.search.input.position() == 0;
         let empty_input = self.search.input.as_str().is_empty();
 
@@ -295,6 +296,7 @@ impl State {
 
                 _ => panic!("invalid tab index on input"),
             },
+            KeyCode::Char('d') if ctrl => Some(InputAction::Delete(self.results_state.selected())),
             KeyCode::Right if empty_input => {
                 let selected_result = self.results_state.selected();
                 if let Some(result) = self.results_content.get(selected_result) {
@@ -304,17 +306,22 @@ impl State {
                 }
                 Some(InputAction::Continue)
             }
+            KeyCode::Right if cursor_at_end_of_line && settings.keys.accept_past_line_end => {
+                Some(InputAction::Accept(self.results_state.selected()))
+            }
             KeyCode::Left if empty_input && settings.keys.accept_past_line_end => {
                 Some(InputAction::Accept(self.results_state.selected()))
             }
-            KeyCode::Backspace if empty_input && settings.keys.accept_past_line_end => {
+            KeyCode::Left if cursor_at_start_of_line && settings.keys.accept_past_line_start => {
                 Some(InputAction::Accept(self.results_state.selected()))
             }
             KeyCode::Left if cursor_at_start_of_line && settings.keys.exit_past_line_start => {
                 Some(Self::handle_key_exit(settings))
             }
-            KeyCode::Backspace
-                if cursor_at_start_of_line && settings.keys.accept_with_backspace =>
+            KeyCode::Backspace if empty_input && settings.keys.accept_past_line_end => {
+                Some(InputAction::Accept(self.results_state.selected()))
+            }
+            KeyCode::Backspace if cursor_at_start_of_line && settings.keys.accept_with_backspace =>
             {
                 Some(InputAction::Accept(self.results_state.selected()))
             }
@@ -1726,6 +1733,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len: 1,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::Emacs,
             prefix: false,
