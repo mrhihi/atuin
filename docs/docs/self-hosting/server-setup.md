@@ -44,23 +44,22 @@ ATUIN_DB_URI="postgres://user:password@hostname/database"
 | `db_uri`            | A valid PostgreSQL URI, for saving history (default: false)    |
 | `path`              | A path to prepend to all routes of the server (default: false) |
 
-For sqlite, substitute the following:
+For sqlite, use the following in your server.toml:
 
+```toml
 db_uri="sqlite:///config/atuin.db"
+```
 
+Alternatively, provide the Database URI via an environment variable
+
+```sh
 ATUIN_DB_URI="sqlite:///config/atuin.db"
+```
 
-These will create the database in the /config directory.
-
-You will need to map some sort of persistent volume for the /config directory and it should be writable by the atuin server.
+These will create the database in the `/config` directory. Be sure to map a persistent volume to the `/config` directory that is writable by the atuin server.
 
 ### TLS
 
-The server supports TLS through the `[tls]` section:
+For TLS/HTTPS support, we recommend using a reverse proxy such as nginx, caddy, or traefik in front of the Atuin server. This is the standard approach for containerized applications and provides better flexibility for certificate management.
 
-```toml
-[tls]
-enable = true
-cert_path = "/path/to/letsencrypt/live/fully.qualified.domain/fullchain.pem"
-pkey_path = "/path/to/letsencrypt/live/fully.qualified.domain/privkey.pem"
-```
+> **Note:** The built-in `[tls]` configuration option has been removed. If you were previously using it, please migrate to a reverse proxy setup. Any existing `[tls]` sections in your config will be ignored.

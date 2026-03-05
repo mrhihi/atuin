@@ -5,12 +5,17 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.keys import Keys
 
 
-$ATUIN_SESSION=$(atuin uuid).rstrip('\n')
+if "ATUIN_SESSION" not in ${...} or ${...}.get("ATUIN_SHLVL", "") != ${...}.get("SHLVL", ""):
+    $ATUIN_SESSION=$(atuin uuid).rstrip('\n')
+    $ATUIN_SHLVL = ${...}.get("SHLVL", "")
 
 @events.on_precommand
 def _atuin_precommand(cmd: str):
     cmd = cmd.rstrip("\n")
-    $ATUIN_HISTORY_ID = $(atuin history start -- @(cmd)).rstrip("\n")
+    try:
+        $ATUIN_HISTORY_ID = $(atuin history start -- @(cmd) 2>/dev/null).rstrip("\n")
+    except:
+        $ATUIN_HISTORY_ID = ""
 
 
 @events.on_postcommand

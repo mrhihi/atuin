@@ -63,11 +63,15 @@ nav:
       - Setting up sync: guide/sync.md
       - Import existing history: guide/import.md
       - Basic usage: guide/basic-usage.md
+      - Advanced usage: guide/advanced-usage.md
+      - Shell Integration: guide/shell-integration.md
+      - Deleting history: guide/delete-history.md
       - Syncing dotfiles: guide/dotfiles.md
       - Theming: guide/theming.md
   - Configuration:
       - Config: configuration/config.md
       - Key Binding: configuration/key-binding.md
+      - Advanced Key Binding: configuration/advanced-key-binding.md
   - Reference:
       - doctor: reference/doctor.md
       - daemon: reference/daemon.md
@@ -85,6 +89,9 @@ nav:
       - Docker: self-hosting/docker.md
       - Kubernetes: self-hosting/kubernetes.md
       - Systemd: self-hosting/systemd.md
+  - AI:
+      - Introduction: ai/introduction.md
+      - Settings: ai/settings.md
   - Known Issues: known-issues.md
   - Integrations: integrations.md
   - FAQ: faq.md

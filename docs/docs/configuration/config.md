@@ -139,13 +139,14 @@ Default: `global`
 
 The default filter to use when searching
 
-| Mode             | Description                                                  |
-| ---------------- | ------------------------------------------------------------ |
-| global (default) | Search history from all hosts, all sessions, all directories |
-| host             | Search history just from this host                           |
-| session          | Search history just from the current session                 |
-| directory        | Search history just from the current directory               |
-| workspace        | Search history just from the current git repository (>17.0)  |
+| Mode             | Description                                                                          |
+|------------------|--------------------------------------------------------------------------------------|
+| global (default) | Search from the full history                                                         |
+| host             | Search history from this host                                                        |
+| session          | Search history from the current session                                              |
+| directory        | Search history from the current directory                                            |
+| workspace        | Search history from the current git repository                                       |
+| session-preload  | Search from the current session and the global history from before the session start |
 
 Filter modes can still be toggled via ctrl-r
 
@@ -266,6 +267,16 @@ Atuin version: >= 18.0
 Default: `true`
 
 Configure whether or not to show tabs for search and inspect.
+
+### `auto_hide_height`
+
+Atuin version: >= 18.4
+
+Default: `8`
+
+Set Atuin to hide lines when a minimum number of rows is subceeded. This has no effect except
+when `compact` style is being used (see `style` above), and currently applies to only the
+interactive search and inspector. It can be turned off entirely by setting to `0`.
 
 ### `exit_mode`
 
@@ -412,8 +423,6 @@ Atuin version: >= 17.0
 
 Default: `false`
 
-Not supported by NuShell presently
-
 When set to true, Atuin will default to immediately executing a command rather
 than the user having to press enter twice. Pressing tab will return to the
 shell and give the user a chance to edit.
@@ -475,6 +484,21 @@ with motion sensitivity can find the live-updating timestamps distracting.
 
 Alternatively, set env var NO_MOTION
 
+## search
+
+### `filters`
+
+Atuin version: >= 18.4
+
+The list of filter modes available in interactive search, in the order they cycle through when you press ctrl-r. By default, all modes are enabled. Removing a mode from this list disables it entirely. The `workspace` mode is skipped when not in a git repository or when `workspaces = false`. See [`filter_mode`](#filter_mode) for a description of each mode.
+
+The `filter_mode` setting selects the initial mode from this list. If `filter_mode` is set to a mode not in the list, the first available mode is used instead.
+
+```toml
+[search]
+filters = ["global", "host", "session", "directory"]
+```
+
 ## Stats
 
 This section of client config is specifically for configuring Atuin stats calculations
@@ -499,6 +523,7 @@ common_subcommands = [
   "git",
   "go",
   "ip",
+  "jj",
   "kubectl",
   "nix",
   "nmcli",
@@ -600,6 +625,41 @@ Default: `a`
 
 Which key to use as the prefix
 
+### `exit_past_line_start`
+
+Atuin version: >= 18.5
+
+Default: `true`
+
+Exits the TUI when scrolling left while the cursor is at the start of the line.
+
+### `accept_past_line_end`
+
+Atuin version: >= 18.5
+
+Default: `true`
+
+The right arrow key performs the same functionality as Tab and copies the selected line to the command line to be
+modified.
+
+### `accept_past_line_start`
+
+Atuin version: >= 18.9
+
+Default: `false`
+
+The left arrow key performs the same functionality as Tab and copies the selected line to the command line to be
+modified.
+
+### `accept_with_backspace`
+
+Atuin version: >= 18.9
+
+Default: `false`
+
+The backspace key performs the same functionality as Tab and copies the selected line to the command line to be
+modified.
+
 ## preview
 
 This section of the client config is specifically for configuring preview-related settings.
@@ -641,6 +701,18 @@ Add the new section to the bottom of your config file
 enabled = true
 ```
 
+### autostart
+
+Default: `false`
+
+Automatically start and manage the daemon when needed.
+This is not compatible with `systemd_socket = true`.
+If a legacy experimental daemon is already running, restart it manually once before using autostart.
+
+```toml
+autostart = false
+```
+
 ### sync_frequency
 
 Default: `300`
@@ -663,6 +735,16 @@ Where to bind a unix socket for client -> daemon communication
 
 If XDG_RUNTIME_DIR is available, then we use this directory instead.
 
+### pidfile_path
+
+Default:
+
+```toml
+pidfile_path = "~/.local/share/atuin/atuin-daemon.pid"
+```
+
+Path to the daemon pidfile used for process coordination.
+
 ### systemd_socket
 
 Default `false`
@@ -683,6 +765,63 @@ The port to use for client -> daemon communication. Only used on non-unix system
 tcp_port = 8889
 ```
 
+## logs
+
+Atuin version: >= 18.13
+
+Behavior of log files.
+
+### enabled
+
+Default: `true`
+
+Whether or not to enable file-based logging.
+
+### dir
+
+Default: `"~/.atuin/logs"`
+
+The directory in which to store log files.
+
+### level
+
+Default: `"info"`
+
+The logging level to use. Valid values are `"trace"`, `"debug"`, `"info"`, `"warn"`, and `"error"`, in order of highest-to-lowest verbosity.
+
+### retention
+
+Default: `4`
+
+How many days of log files to keep (per file type). Files older than this will be removed.
+
+### ai
+
+A sub-object with specific options for AI logging:
+
+* `enabled` - whether to output AI logs; defaults to `logs.enabled`
+* `file` - the filename to use for the AI logs; defaults to `"ai.log"`. Always relative to `logs.dir`.
+* `level` - override the log level for the AI logs; defaults to `logs.level`
+* `retention` - how many days to store AI logs; defaults to `logs.retention`
+
+### daemon
+
+A sub-object with specific options for daemon logging:
+
+* `enabled` - whether to output daemon logs; defaults to `logs.enabled`
+* `file` - the filename to use for the daemon logs; defaults to `"daemon.log"`. Always relative to `logs.dir`.
+* `level` - override the log level for the daemon logs; defaults to `logs.level`
+* `retention` - how many days to store daemon logs; defaults to `logs.retention`
+
+### search
+
+A sub-object with specific options for search logging:
+
+* `enabled` - whether to output search logs; defaults to `logs.enabled`
+* `file` - the filename to use for the search logs; defaults to `"search.log"`. Always relative to `logs.dir`.
+* `level` - override the log level for the search logs; defaults to `logs.level`
+* `retention` - how many days to store search logs; defaults to `logs.retention`
+
 ## theme
 
 Atuin version: >= 18.4
@@ -691,17 +830,17 @@ The theme to use for showing the terminal interface.
 
 ```toml
 [theme]
-name = ""
+name = "default"
 debug = false
 max_depth = 10
 ```
 
 ### `name`
 
-Default: `""`
+Default: `"default"`
 
-A theme name that must be present as a built-in (an empty string for the default,
-`autumn` or `marine`), or found in the themes directory, with the suffix `.toml`.
+A theme name that must be present as a built-in (unset or `default` for the default,
+else `autumn` or `marine`), or found in the themes directory, with the suffix `.toml`.
 By default this is `~/.config/atuin/themes/` but can be overridden with the
 `ATUIN_THEME_DIR` environment variable.
 
@@ -731,3 +870,67 @@ need to be added in or changed in normal usage.
 ```toml
 max_depth = 10
 ```
+
+## ui
+
+Atuin version: >= 18.5
+
+Configure the interactive search UI appearance.
+
+```toml
+[ui]
+columns = ["duration", "time", "command"]
+```
+
+### `columns`
+
+Default: `["duration", "time", "command"]`
+
+Columns to display in the interactive search, from left to right. The selection
+indicator (`" > "`) is always shown first implicitly.
+
+Each column can be specified as:
+- A simple string (uses default width): `"duration"`
+- An object with type and optional width/expand: `{ type = "directory", width = 30 }`
+
+#### Available column types
+
+| Column    | Default Width | Description                                     |
+| --------- | ------------- | ----------------------------------------------- |
+| duration  | 5             | Command execution duration (e.g., "123ms")      |
+| time      | 8             | Relative time since execution (e.g., "59m ago") |
+| datetime  | 16            | Absolute timestamp (e.g., "2025-01-22 14:35")   |
+| directory | 20            | Working directory (truncated if too long)       |
+| host      | 15            | Hostname where command was run                  |
+| user      | 10            | Username                                        |
+| exit      | 3             | Exit code (colored by success/failure)          |
+| command   | *             | The command itself (expands by default)         |
+
+#### Column options
+
+- **type**: The column type (required when using object format)
+- **width**: Custom width in characters (optional, uses default if not specified)
+- **expand**: If `true`, the column fills remaining space. Default is `true` for `command`, `false` for others. Only one column should have `expand = true`.
+
+#### Examples
+
+```toml
+# Minimal - more space for commands
+columns = ["duration", "command"]
+
+# With custom directory width
+columns = ["duration", { type = "directory", width = 30 }, "command"]
+
+# Show host for multi-machine sync users
+columns = ["duration", "time", "host", "command"]
+
+# Show exit codes prominently
+columns = ["exit", "duration", "command"]
+
+# Make directory expand instead of command
+columns = ["duration", "time", { type = "directory", expand = true }, { type = "command", expand = false }]
+```
+
+## ai
+
+The settings for Atuin AI are listed in [a separate section](../../ai/settings/).

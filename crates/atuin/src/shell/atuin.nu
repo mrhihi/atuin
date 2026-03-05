@@ -8,7 +8,10 @@ use (if not (
     (version).minor >= 103
 ) { "compat" }) *
 
-$env.ATUIN_SESSION = (random uuid -v 7 | str replace -a "-" "")
+if 'ATUIN_SESSION' not-in $env or ('ATUIN_SHLVL' not-in $env) or ($env.ATUIN_SHLVL != ($env.SHLVL? | default "")) {
+    $env.ATUIN_SESSION = (random uuid -v 7 | str replace -a "-" "")
+    $env.ATUIN_SHLVL = ($env.SHLVL? | default "")
+}
 hide-env -i ATUIN_HISTORY_ID
 
 # Magic token to make sure we don't record commands run by keybindings
@@ -23,7 +26,7 @@ let _atuin_pre_execution = {||
         return
     }
     if not ($cmd | str starts-with $ATUIN_KEYBINDING_TOKEN) {
-        $env.ATUIN_HISTORY_ID = (atuin history start -- $cmd)
+        $env.ATUIN_HISTORY_ID = (atuin history start -- $cmd e>| complete | get stdout | str trim)
     }
 }
 

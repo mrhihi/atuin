@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     env,
     path::{Path, PathBuf},
     str::FromStr,
@@ -33,6 +32,7 @@ use super::{
     settings::{FilterMode, SearchMode, Settings},
 };
 
+#[derive(Clone)]
 pub struct Context {
     pub session: String,
     pub cwd: String,
@@ -55,24 +55,33 @@ pub struct OptFilters {
     pub include_duplicates: bool,
 }
 
-pub fn current_context() -> Context {
-    let Ok(session) = env::var("ATUIN_SESSION") else {
-        eprintln!(
-            "ERROR: Failed to find $ATUIN_SESSION in the environment. Check that you have correctly set up your shell."
-        );
-        std::process::exit(1);
-    };
+pub async fn current_context() -> eyre::Result<Context> {
+    let session = env::var("ATUIN_SESSION").map_err(|_| {
+        eyre::eyre!("Failed to find $ATUIN_SESSION in the environment. Check that you have correctly set up your shell.")
+    })?;
     let hostname = get_host_user();
     let cwd = utils::get_current_dir();
-    let host_id = Settings::host_id().expect("failed to load host ID");
+    let host_id = Settings::host_id().await?;
     let git_root = utils::in_git_repo(cwd.as_str());
 
-    Context {
+    Ok(Context {
         session,
         hostname,
         cwd,
         git_root,
         host_id: host_id.0.as_simple().to_string(),
+    })
+}
+
+impl Context {
+    pub fn from_history(entry: &History) -> Self {
+        Context {
+            session: entry.session.to_string(),
+            cwd: entry.cwd.to_string(),
+            hostname: entry.hostname.to_string(),
+            host_id: String::new(),
+            git_root: utils::in_git_repo(entry.cwd.as_str()),
+        }
     }
 }
 
@@ -129,9 +138,13 @@ pub trait Database: Send + Sync + 'static {
 
     async fn all_with_count(&self) -> Result<Vec<(History, i32)>>;
 
+    fn all_paged(&self, page_size: usize, include_deleted: bool, unique: bool) -> Paged;
+
     async fn stats(&self, h: &History) -> Result<HistoryStats>;
 
     async fn get_dups(&self, before: i64, dupkeep: u32) -> Result<Vec<History>>;
+
+    fn clone_boxed(&self) -> Box<dyn Database + 'static>;
 }
 
 // Intended for use on a developer machine and not a sync server.
@@ -191,8 +204,8 @@ impl Sqlite {
 
     async fn save_raw(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, h: &History) -> Result<()> {
         sqlx::query(
-            "insert or ignore into history(id, timestamp, duration, exit, command, cwd, session, hostname, deleted_at)
-                values(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "insert or ignore into history(id, timestamp, duration, exit, command, cwd, session, hostname, author, intent, deleted_at)
+                values(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
         .bind(h.id.0.as_str())
         .bind(h.timestamp.unix_timestamp_nanos() as i64)
@@ -202,6 +215,8 @@ impl Sqlite {
         .bind(h.cwd.as_str())
         .bind(h.session.as_str())
         .bind(h.hostname.as_str())
+        .bind(h.author.as_str())
+        .bind(h.intent.as_deref())
         .bind(h.deleted_at.map(|t|t.unix_timestamp_nanos() as i64))
         .execute(&mut **tx)
         .await?;
@@ -223,6 +238,13 @@ impl Sqlite {
 
     fn query_history(row: SqliteRow) -> History {
         let deleted_at: Option<i64> = row.get("deleted_at");
+        let hostname: String = row.get("hostname");
+        let author: Option<String> = row.try_get("author").ok().flatten();
+        let author = author
+            .filter(|author| !author.trim().is_empty())
+            .unwrap_or_else(|| History::author_from_hostname(hostname.as_str()));
+        let intent: Option<String> = row.try_get("intent").ok().flatten();
+        let intent = intent.filter(|intent| !intent.trim().is_empty());
 
         History::from_db()
             .id(row.get("id"))
@@ -235,7 +257,9 @@ impl Sqlite {
             .command(row.get("command"))
             .cwd(row.get("cwd"))
             .session(row.get("session"))
-            .hostname(row.get("hostname"))
+            .hostname(hostname)
+            .author(author)
+            .intent(intent)
             .deleted_at(
                 deleted_at.and_then(|t| OffsetDateTime::from_unix_timestamp_nanos(t as i128).ok()),
             )
@@ -286,7 +310,7 @@ impl Database for Sqlite {
 
         sqlx::query(
             "update history
-                set timestamp = ?2, duration = ?3, exit = ?4, command = ?5, cwd = ?6, session = ?7, hostname = ?8, deleted_at = ?9
+                set timestamp = ?2, duration = ?3, exit = ?4, command = ?5, cwd = ?6, session = ?7, hostname = ?8, author = ?9, intent = ?10, deleted_at = ?11
                 where id = ?1",
         )
         .bind(h.id.0.as_str())
@@ -297,6 +321,8 @@ impl Database for Sqlite {
         .bind(h.cwd.as_str())
         .bind(h.session.as_str())
         .bind(h.hostname.as_str())
+        .bind(h.author.as_str())
+        .bind(h.intent.as_deref())
         .bind(h.deleted_at.map(|t|t.unix_timestamp_nanos() as i64))
         .execute(&self.pool)
         .await?;
@@ -483,75 +509,46 @@ impl Database for Sqlite {
             SearchMode::Prefix => sql.and_where_like_left("command", query.replace('*', "%")),
             _ => {
                 let mut is_or = false;
-                let mut regex = None;
-                for part in query.split_inclusive(' ') {
-                    let query_part: Cow<str> = match (&mut regex, part.starts_with("r/")) {
-                        (None, false) => {
-                            if part.trim_end().is_empty() {
-                                continue;
-                            }
-                            Cow::Owned(part.trim_end().replace('*', "%")) // allow wildcard char
-                        }
-                        (None, true) => {
-                            if part[2..].trim_end().ends_with('/') {
-                                let end_pos = part.trim_end().len() - 1;
-                                regexes.push(String::from(&part[2..end_pos]));
-                            } else {
-                                regex = Some(String::from(&part[2..]));
-                            }
-                            continue;
-                        }
-                        (Some(r), _) => {
-                            if part.trim_end().ends_with('/') {
-                                let end_pos = part.trim_end().len() - 1;
-                                r.push_str(&part.trim_end()[..end_pos]);
-                                regexes.push(regex.take().unwrap());
-                            } else {
-                                r.push_str(part);
-                            }
-                            continue;
-                        }
-                    };
-
+                for token in QueryTokenizer::new(query) {
                     // TODO smart case mode could be made configurable like in fzf
-                    let (is_glob, glob) = if query_part.contains(char::is_uppercase) {
+                    let (is_glob, glob) = if token.has_uppercase() {
                         (true, "*")
                     } else {
                         (false, "%")
                     };
-
-                    let (is_inverse, query_part) = match query_part.strip_prefix('!') {
-                        Some(stripped) => (true, Cow::Borrowed(stripped)),
-                        None => (false, query_part),
-                    };
-
-                    #[allow(clippy::if_same_then_else)]
-                    let param = if query_part == "|" {
-                        if !is_or {
-                            is_or = true;
+                    let param = match token {
+                        QueryToken::Regex(r) => {
+                            regexes.push(String::from(r));
                             continue;
-                        } else {
-                            format!("{glob}|{glob}")
                         }
-                    } else if let Some(term) = query_part.strip_prefix('^') {
-                        format!("{term}{glob}")
-                    } else if let Some(term) = query_part.strip_suffix('$') {
-                        format!("{glob}{term}")
-                    } else if let Some(term) = query_part.strip_prefix('\'') {
-                        format!("{glob}{term}{glob}")
-                    } else if is_inverse {
-                        format!("{glob}{query_part}{glob}")
-                    } else if search_mode == SearchMode::FullText {
-                        format!("{glob}{query_part}{glob}")
-                    } else {
-                        query_part.split("").join(glob)
+                        QueryToken::Or => {
+                            if !is_or {
+                                is_or = true;
+                                continue;
+                            } else {
+                                format!("{glob}|{glob}")
+                            }
+                        }
+                        QueryToken::MatchStart(term, _) => {
+                            format!("{term}{glob}")
+                        }
+                        QueryToken::MatchEnd(term, _) => {
+                            format!("{glob}{term}")
+                        }
+                        QueryToken::MatchFull(term, _) => {
+                            format!("{glob}{term}{glob}")
+                        }
+                        QueryToken::Match(term, _) => {
+                            if search_mode == SearchMode::FullText {
+                                format!("{glob}{term}{glob}")
+                            } else {
+                                term.split("").join(glob)
+                            }
+                        }
                     };
 
-                    sql.fuzzy_condition("command", param, is_inverse, is_glob, is_or);
+                    sql.fuzzy_condition("command", param, token.is_inverse(), is_glob, is_or);
                     is_or = false;
-                }
-                if let Some(r) = regex {
-                    regexes.push(r);
                 }
 
                 &mut sql
@@ -632,6 +629,8 @@ impl Database for Sqlite {
                 "exit",
                 "command",
                 "deleted_at",
+                "null as author",
+                "null as intent",
                 "group_concat(cwd, ':') as cwd",
                 "group_concat(session) as session",
                 "group_concat(hostname, ',') as hostname",
@@ -653,6 +652,10 @@ impl Database for Sqlite {
             .await?;
 
         Ok(res)
+    }
+
+    fn all_paged(&self, page_size: usize, include_deleted: bool, unique: bool) -> Paged {
+        Paged::new(Box::new(self.clone()), page_size, include_deleted, unique)
     }
 
     // deleted_at doesn't mean the actual time that the user deleted it,
@@ -818,6 +821,70 @@ impl Database for Sqlite {
         .await?;
 
         Ok(res)
+    }
+
+    fn clone_boxed(&self) -> Box<dyn Database + 'static> {
+        Box::new(self.clone())
+    }
+}
+
+pub struct Paged {
+    database: Box<dyn Database + 'static>,
+    page_size: usize,
+    last_id: Option<String>,
+    include_deleted: bool,
+    unique: bool,
+}
+
+impl Paged {
+    pub fn new(
+        database: Box<dyn Database + 'static>,
+        page_size: usize,
+        include_deleted: bool,
+        unique: bool,
+    ) -> Self {
+        Self {
+            database,
+            page_size,
+            last_id: None,
+            include_deleted,
+            unique,
+        }
+    }
+
+    pub async fn next(&mut self) -> Result<Option<Vec<History>>> {
+        let mut query = SqlBuilder::select_from(SqlName::new("history").alias("h").baquoted());
+
+        query.field("*").order_desc("id");
+
+        if !self.include_deleted {
+            query.and_where_is_null("deleted_at");
+        }
+
+        if self.unique {
+            // We want to deduplicate on command, but the user can search via cwd, hostname, and session.
+            // Without those fields, filter modes won't work right. With those fields, we get duplicates.
+            // This must be handled upstream.
+            query
+                .group_by("command, cwd, hostname, session")
+                .having("max(timestamp)");
+        }
+
+        query.limit(self.page_size);
+
+        if let Some(last_id) = &self.last_id {
+            query.and_where_lt("id", quote(last_id));
+        }
+
+        let query = query.sql().expect("bug in list query. please report");
+        let res = self.database.query_history(&query).await?;
+
+        if res.is_empty() {
+            Ok(None)
+        } else {
+            self.last_id = Some(res.last().unwrap().id.0.clone());
+            Ok(Some(res))
+        }
     }
 }
 
@@ -1171,6 +1238,126 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_paged_basic() {
+        let mut db = Sqlite::new("sqlite::memory:", test_local_timeout())
+            .await
+            .unwrap();
+
+        // Add 5 history items
+        for i in 0..5 {
+            new_history_item(&mut db, &format!("command{}", i))
+                .await
+                .unwrap();
+        }
+
+        // Create a paged iterator with page_size of 2
+        let mut paged = db.all_paged(2, false, false);
+
+        // First page should have 2 items
+        let page1 = paged.next().await.unwrap();
+        assert!(page1.is_some());
+        assert_eq!(page1.unwrap().len(), 2);
+
+        // Second page should have 2 items
+        let page2 = paged.next().await.unwrap();
+        assert!(page2.is_some());
+        assert_eq!(page2.unwrap().len(), 2);
+
+        // Third page should have 1 item
+        let page3 = paged.next().await.unwrap();
+        assert!(page3.is_some());
+        assert_eq!(page3.unwrap().len(), 1);
+
+        // Fourth page should be None (exhausted)
+        let page4 = paged.next().await.unwrap();
+        assert!(page4.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_paged_empty() {
+        let db = Sqlite::new("sqlite::memory:", test_local_timeout())
+            .await
+            .unwrap();
+
+        // Create a paged iterator on empty database
+        let mut paged = db.all_paged(10, false, false);
+
+        // Should return None immediately
+        let page = paged.next().await.unwrap();
+        assert!(page.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_paged_unique() {
+        let mut db = Sqlite::new("sqlite::memory:", test_local_timeout())
+            .await
+            .unwrap();
+
+        // Add duplicate commands
+        new_history_item(&mut db, "duplicate").await.unwrap();
+        new_history_item(&mut db, "duplicate").await.unwrap();
+        new_history_item(&mut db, "unique1").await.unwrap();
+        new_history_item(&mut db, "unique2").await.unwrap();
+
+        // Without unique flag - should get all 4
+        let mut paged = db.all_paged(10, false, false);
+        let page = paged.next().await.unwrap().unwrap();
+        assert_eq!(page.len(), 4);
+
+        // With unique flag - should get 3 (duplicates collapsed)
+        let mut paged_unique = db.all_paged(10, false, true);
+        let page_unique = paged_unique.next().await.unwrap().unwrap();
+        assert_eq!(page_unique.len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_paged_include_deleted() {
+        let mut db = Sqlite::new("sqlite::memory:", test_local_timeout())
+            .await
+            .unwrap();
+
+        // Add items
+        new_history_item(&mut db, "keep1").await.unwrap();
+        new_history_item(&mut db, "keep2").await.unwrap();
+        new_history_item(&mut db, "delete_me").await.unwrap();
+
+        // Delete one item
+        let all = db
+            .list(
+                &[],
+                &Context {
+                    hostname: "".to_string(),
+                    session: "".to_string(),
+                    cwd: "".to_string(),
+                    host_id: "".to_string(),
+                    git_root: None,
+                },
+                None,
+                false,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let to_delete = all
+            .iter()
+            .find(|h| h.command == "delete_me")
+            .unwrap()
+            .clone();
+        db.delete(to_delete).await.unwrap();
+
+        // Without include_deleted - should get 2
+        let mut paged = db.all_paged(10, false, false);
+        let page = paged.next().await.unwrap().unwrap();
+        assert_eq!(page.len(), 2);
+
+        // With include_deleted - should get 3
+        let mut paged_deleted = db.all_paged(10, true, false);
+        let page_deleted = paged_deleted.next().await.unwrap().unwrap();
+        assert_eq!(page_deleted.len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_search_bench_dupes() {
         let context = Context {
             hostname: "test:host".to_string(),
@@ -1204,5 +1391,96 @@ mod test {
         let duration = start.elapsed();
 
         assert!(duration < Duration::from_secs(15));
+    }
+}
+
+pub struct QueryTokenizer<'a> {
+    query: &'a str,
+    last_pos: usize,
+}
+
+pub enum QueryToken<'a> {
+    Match(&'a str, bool),
+    MatchStart(&'a str, bool),
+    MatchEnd(&'a str, bool),
+    MatchFull(&'a str, bool),
+    Or,
+    Regex(&'a str),
+}
+
+impl<'a> QueryToken<'a> {
+    pub fn has_uppercase(&self) -> bool {
+        match self {
+            Self::Match(term, _)
+            | Self::MatchStart(term, _)
+            | Self::MatchEnd(term, _)
+            | Self::MatchFull(term, _) => term.contains(char::is_uppercase),
+            _ => false,
+        }
+    }
+
+    pub fn is_inverse(&self) -> bool {
+        match self {
+            Self::Match(_, inv)
+            | Self::MatchStart(_, inv)
+            | Self::MatchEnd(_, inv)
+            | Self::MatchFull(_, inv) => *inv,
+            _ => false,
+        }
+    }
+}
+
+impl<'a> QueryTokenizer<'a> {
+    pub fn new(query: &'a str) -> Self {
+        Self { query, last_pos: 0 }
+    }
+}
+
+impl<'a> Iterator for QueryTokenizer<'a> {
+    type Item = QueryToken<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let remaining = &self.query[self.last_pos..];
+        if remaining.is_empty() {
+            return None;
+        }
+
+        if let Some(remaining) = remaining.strip_prefix("r/") {
+            let (regex, next_pos) = if let Some(end) = remaining.find("/ ") {
+                (&remaining[..end], self.last_pos + 2 + end + 2)
+            } else if let Some(remaining) = remaining.strip_suffix('/') {
+                (remaining, self.query.len())
+            } else {
+                (remaining, self.query.len())
+            };
+            self.last_pos = next_pos;
+            Some(QueryToken::Regex(regex))
+        } else {
+            let (mut part, next_pos) = if let Some(sp) = remaining.find(' ') {
+                (&remaining[..sp], self.last_pos + sp + 1)
+            } else {
+                (remaining, self.query.len())
+            };
+            self.last_pos = next_pos;
+
+            if part == "|" {
+                return Some(QueryToken::Or);
+            }
+
+            let mut is_inverse = false;
+            if let Some(s) = part.strip_prefix('!') {
+                part = s;
+                is_inverse = true;
+            }
+            let token = if let Some(s) = part.strip_prefix('^') {
+                QueryToken::MatchStart(s, is_inverse)
+            } else if let Some(s) = part.strip_suffix('$') {
+                QueryToken::MatchEnd(s, is_inverse)
+            } else if let Some(s) = part.strip_prefix('\'') {
+                QueryToken::MatchFull(s, is_inverse)
+            } else {
+                QueryToken::Match(part, is_inverse)
+            };
+            Some(token)
+        }
     }
 }

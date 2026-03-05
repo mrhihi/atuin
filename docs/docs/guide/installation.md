@@ -2,6 +2,8 @@
 
 ## Recommended installation approach
 
+### On Unix
+
 Let's get started! First up, you will want to install Atuin. The recommended
 approach is to use the installation script, which automatically handles the
 installation of Atuin including the requirements for your environment.
@@ -14,7 +16,33 @@ then the manual steps below offer much more flexibility.
 curl --proto '=https' --tlsv1.2 -LsSf https://setup.atuin.sh | sh
 ```
 
-[**Setup sync** - Move on to the next step, or read on to manually install Atuin instead.](sync.md)
+The install script will walk you through importing your shell history and setting
+up a sync account. To skip these interactive prompts (e.g. in CI or
+Dockerfiles), pass `--non-interactive`:
+
+```shell
+curl --proto '=https' --tlsv1.2 -LsSf https://setup.atuin.sh | sh -s -- --non-interactive
+```
+
+The script also automatically detects non-interactive environments (piped input,
+no TTY) and skips the prompts in those cases.
+
+[**Set up sync** - Move on to the next step, or read on to manually install Atuin instead.](sync.md)
+
+### On Windows
+
+The recommended approach on Windows is to use WinGet to install Atuin. Then, if you use PowerShell,
+add the initialization command to your PowerShell profile, and restart your shell.
+
+```shell
+winget install -e Atuinsh.Atuin
+if (-not (Test-Path -Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force | Out-Null }
+Write-Output 'atuin init powershell | Out-String | Invoke-Expression' >> $PROFILE
+```
+
+Note that the `$PROFILE` path may depend on your PowerShell version.
+
+[**Set up sync** - Move on to the next step.](sync.md)
 
 ## Manual installation
 
@@ -24,7 +52,7 @@ If you don't wish to use the installer, the manual installation steps are as fol
 
 === "Cargo"
 
-    It's best to use [rustup](https://rustup.rs/) to get setup with a Rust
+    It's best to use [rustup](https://rustup.rs/) to set up a Rust
     toolchain, then you can run:
 
     ```shell
@@ -43,6 +71,14 @@ If you don't wish to use the installer, the manual installation steps are as fol
 
     ```shell
     sudo port install atuin
+    ```
+
+=== "mise"
+
+    Atuin is also installable using [mise](https://github.com/jdx/mise)
+
+    ```shell
+    mise use -g atuin@latest
     ```
 
 === "Nix"
@@ -97,6 +133,14 @@ If you don't wish to use the installer, the manual installation steps are as fol
     zinit light atuinsh/atuin
     ```
 
+=== "WinGet"
+
+    Atuin is available on WinGet:
+
+    ```shell
+    winget install -e Atuinsh.Atuin
+    ```
+
 === "Source"
 
     Atuin builds on the latest stable version of Rust, and we make no
@@ -140,6 +184,12 @@ After installing, remember to restart your shell.
         antigen bundle atuinsh/atuin@main
         ```
 
+    === "Antidote"
+
+        ```shell
+        antidote install atuinsh/atuin
+        ```
+
 === "bash"
 
     === "ble.sh"
@@ -163,8 +213,9 @@ After installing, remember to restart your shell.
             While Atuin will ignore commands prefixed with whitespace, they may still end up in your bash history.
             Please check your configuration! All other shells do not have this issue.
 
-            To use Atuin in `bash < 4` with bash-preexec, the option `enter_accept` needs
-            to be turned on (which is so by default).
+            To use `atuin < 18.10.0` in `bash < 4` with bash-preexec, the option
+            `enter_accept` needs to be turned on (which is so by default).  There is no
+            restriction in the latest version of Atuin (>= 18.10.0).
 
             bash-preexec cannot properly invoke the `preexec` hook for subshell commands
             `(...)`, function definitions `func() { ...; }`, empty for-in-statements `for
@@ -178,7 +229,7 @@ After installing, remember to restart your shell.
         echo '[[ -f ~/.bash-preexec.sh ]] && source ~/.bash-preexec.sh' >> ~/.bashrc
         ```
 
-        Then setup Atuin
+        Then set up Atuin
 
         ```shell
         echo 'eval "$(atuin init bash)"' >> ~/.bashrc
@@ -216,6 +267,14 @@ After installing, remember to restart your shell.
     execx($(atuin init xonsh))
     ```
     to the end of your `~/.xonshrc`
+
+=== "PowerShell"
+
+    Add the following to the end of your `$PROFILE` file:
+
+    ```shell
+    atuin init powershell | Out-String | Invoke-Expression
+    ```
 
 ## Upgrade
 

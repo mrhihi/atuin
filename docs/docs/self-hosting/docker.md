@@ -10,7 +10,10 @@
 There is a supplied docker image to make deploying a server as a container easier. The "LATEST TAGGED RELEASE" can be found on the [releases page](https://github.com/atuinsh/atuin/releases).
 
 ```sh
-docker run -d -v "$HOME/.config/atuin:/config" ghcr.io/atuinsh/atuin:<LATEST TAGGED RELEASE> server start
+CONFIG="$HOME/.config/atuin"
+mkdir "$CONFIG"
+chown 1000:1000 "$CONFIG"
+docker run -d -v "$CONFIG:/config" ghcr.io/atuinsh/atuin:<LATEST TAGGED RELEASE> start
 ```
 
 ## Docker Compose
@@ -33,7 +36,7 @@ services:
   atuin:
     restart: always
     image: ghcr.io/atuinsh/atuin:<LATEST TAGGED RELEASE>
-    command: server start
+    command: start
     volumes:
       - "./config:/config"
     ports:
@@ -46,10 +49,10 @@ services:
     depends_on:
       - db
   db:
-    image: postgres:14
+    image: postgres:18
     restart: unless-stopped
     volumes: # Don't remove permanent storage for index database files!
-      - "./database:/var/lib/postgresql/data/"
+      - "./database:/var/lib/postgresql/"
     environment:
       POSTGRES_USER: ${ATUIN_DB_USERNAME}
       POSTGRES_PASSWORD: ${ATUIN_DB_PASSWORD}
@@ -59,6 +62,8 @@ services:
 Start the services using `docker compose`:
 
 ```sh
+mkdir config
+chown 1000:1000 config
 docker compose up -d
 ```
 

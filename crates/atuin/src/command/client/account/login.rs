@@ -35,18 +35,22 @@ fn get_input() -> Result<String> {
 
 impl Cmd {
     pub async fn run(&self, settings: &Settings, store: &SqliteStore) -> Result<()> {
+        if settings.logged_in().await? {
+            bail!(
+                "You are already logged in! Please run 'atuin logout' if you wish to login again"
+            );
+        }
+
+        self.run_sync_login(settings, store).await
+    }
+
+    async fn run_sync_login(&self, settings: &Settings, store: &SqliteStore) -> Result<()> {
         // TODO(ellie): Replace this with a call to atuin_client::login::login
         // The reason I haven't done this yet is that this implementation allows for
         // an empty key. This will use an existing key file.
         //
         // I'd quite like to ditch that behaviour, so have not brought it into the library
         // function.
-        if settings.logged_in() {
-            bail!(
-                "You are already logged in! Please run 'atuin logout' if you wish to login again"
-            );
-        }
-
         let username = or_user_input(self.username.clone(), "username");
         let password = self.password.clone().unwrap_or_else(read_user_password);
 
@@ -75,35 +79,25 @@ impl Cmd {
             match bip39::Mnemonic::from_phrase(&key, bip39::Language::English) {
                 Ok(mnemonic) => encode_key(Key::from_slice(mnemonic.entropy()))?,
                 Err(err) => {
-                    match err.downcast_ref::<bip39::ErrorKind>() {
-                        Some(err) => {
-                            match err {
-                                // assume they copied in the base64 key
-                                bip39::ErrorKind::InvalidWord => key,
-                                bip39::ErrorKind::InvalidChecksum => {
-                                    bail!("key mnemonic was not valid")
-                                }
-                                bip39::ErrorKind::InvalidKeysize(_)
-                                | bip39::ErrorKind::InvalidWordLength(_)
-                                | bip39::ErrorKind::InvalidEntropyLength(_, _) => {
-                                    bail!("key was not the correct length")
-                                }
-                            }
+                    match err {
+                        // assume they copied in the base64 key
+                        bip39::ErrorKind::InvalidWord(_) => key,
+                        bip39::ErrorKind::InvalidChecksum => {
+                            bail!("key mnemonic was not valid")
                         }
-                        _ => {
-                            // unknown error. assume they copied the base64 key
-                            key
+                        bip39::ErrorKind::InvalidKeysize(_)
+                        | bip39::ErrorKind::InvalidWordLength(_)
+                        | bip39::ErrorKind::InvalidEntropyLength(_, _) => {
+                            bail!("key was not the correct length")
                         }
                     }
                 }
             }
         };
 
-        // I've simplified this a little, but it could really do with a refactor
-        // Annoyingly, it's also very important to get it correct
         if key.is_empty() {
             if key_path.exists() {
-                let bytes = fs_err::read_to_string(key_path)
+                let bytes = fs_err::read_to_string(&key_path)
                     .context("existing key file couldn't be read")?;
                 if decode_key(bytes).is_err() {
                     bail!("the key in existing key file was invalid");
@@ -118,7 +112,7 @@ impl Cmd {
                 bail!("the specified key was invalid");
             }
 
-            let mut file = File::create(key_path).await?;
+            let mut file = File::create(&key_path).await?;
             file.write_all(key.as_bytes()).await?;
         } else {
             // we now know that the user has logged in specifying a key, AND that the key path
@@ -139,7 +133,7 @@ impl Cmd {
                 store.re_encrypt(&current_key, &new_key).await?;
 
                 println!("Writing new key");
-                let mut file = File::create(key_path).await?;
+                let mut file = File::create(&key_path).await?;
                 file.write_all(encoded.as_bytes()).await?;
             }
         }
@@ -150,9 +144,10 @@ impl Cmd {
         )
         .await?;
 
-        let session_path = settings.session_path.as_str();
-        let mut file = File::create(session_path).await?;
-        file.write_all(session.session.as_bytes()).await?;
+        Settings::meta_store()
+            .await?
+            .save_session(&session.session)
+            .await?;
 
         println!("Logged in!");
 

@@ -30,7 +30,10 @@ if (!(Get-Module PSReadLine -ErrorAction Ignore)) {
 }
 
 New-Module -Name Atuin -ScriptBlock {
-    $env:ATUIN_SESSION = atuin uuid
+    if (-not $env:ATUIN_SESSION -or $env:ATUIN_PID -ne $PID) {
+        $env:ATUIN_SESSION = atuin uuid
+        $env:ATUIN_PID = $PID
+    }
 
     $script:atuinHistoryId = $null
     $script:previousPSConsoleHostReadLine = $Function:PSConsoleHostReadLine
@@ -60,7 +63,8 @@ New-Module -Name Atuin -ScriptBlock {
         $lastRunStatus = $?
 
         # Exit statuses are maintained separately for native and PowerShell commands, this needs to be taken into account.
-        $exitCode = if ($lastRunStatus) { 0 } elseif ($global:LASTEXITCODE) { $global:LASTEXITCODE } else { 1 }
+        $lastNativeExitCode = $global:LASTEXITCODE
+        $exitCode = if ($lastRunStatus) { 0 } elseif ($lastNativeExitCode) { $lastNativeExitCode } else { 1 }
 
         ## 2. Report the status of the previous command to Atuin (atuin history end).
 
@@ -122,6 +126,7 @@ New-Module -Name Atuin -ScriptBlock {
             $env:ATUIN_COMMAND_LINE = $null
         }
 
+        $global:LASTEXITCODE = $lastNativeExitCode
         return $line
     }
 
@@ -130,16 +135,40 @@ New-Module -Name Atuin -ScriptBlock {
 
         $previousOutputEncoding = [System.Console]::OutputEncoding
         $resultFile = New-TemporaryFile
+        $suggestion = ""
+        $errorOutput = ""
 
         try {
             [System.Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-            # Atuin is started through Start-Process to avoid interfering with the current shell.
-            $env:ATUIN_SHELL = "powershell"
-            $env:ATUIN_QUERY = Get-CommandLine
-            $argString = "search -i --result-file ""$resultFile"" $ExtraArgs"
-            Start-Process -PassThru -NoNewWindow -FilePath atuin -ArgumentList $argString | Wait-Process
-            $suggestion = (Get-Content -Raw $resultFile -Encoding UTF8 | Out-String).Trim()
+            # Start-Process does some crazy stuff, just use the Process class directly to have more control.
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo.FileName = "atuin"
+            $process.StartInfo.Arguments = "search -i --result-file ""$resultFile"" $ExtraArgs"
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.RedirectStandardError = $true
+            $process.StartInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+            $process.StartInfo.EnvironmentVariables["ATUIN_SHELL"] = "powershell"
+            $process.StartInfo.EnvironmentVariables["ATUIN_QUERY"] = Get-CommandLine
+
+            try {
+                $process.Start() | Out-Null
+
+                # A single stream is redirected, so we can read it synchronously, but we have to start reading it
+                # before waiting for the process to exit, otherwise the buffer could fill up and cause a deadlock.
+                $errorOutput = $process.StandardError.ReadToEnd().Trim()
+                $process.WaitForExit()
+
+                $suggestion = (Get-Content -Raw $resultFile -Encoding UTF8 | Out-String).Trim()
+            }
+            catch {
+                $errorOutput = $_
+            }
+
+            if ($errorOutput) {
+                Write-Host -ForegroundColor Red "Atuin error:"
+                Write-Host -ForegroundColor DarkRed $errorOutput
+            }
 
             # If no shell prompt offset is set, initialize it from the current prompt line count.
             if ($null -eq $env:ATUIN_POWERSHELL_PROMPT_OFFSET) {
@@ -174,8 +203,6 @@ New-Module -Name Atuin -ScriptBlock {
         }
         finally {
             [System.Console]::OutputEncoding = $previousOutputEncoding
-            $env:ATUIN_SHELL = $null
-            $env:ATUIN_QUERY = $null
             Remove-Item $resultFile
         }
     }

@@ -25,9 +25,15 @@ It is also recommended to update your `$PATH` so that the pre-exec scripts would
 export PATH="./target/release:$PATH"
 ```
 
-These 5 variables can be added in a local `.envrc` file, read by [direnv](https://direnv.net/).
+If you'd like to load a different configuration file, set `ATUIN_CONFIG_DIR` to a folder that contains your `config.toml` file:
 
-## PRs 
+```shell
+export ATUIN_CONFIG_DIR=/tmp/atuin-config/
+```
+
+These variable exports can be added in a local `.envrc` file, read by [direnv](https://direnv.net/).
+
+## PRs
 
 It can speed up the review cycle if you consent to maintainers pushing to your branch. This will only be in the case of small fixes or adjustments, and not anything large. If you feel OK with this, please check the box on the template!
 
@@ -35,7 +41,7 @@ It can speed up the review cycle if you consent to maintainers pushing to your b
 
 Any issues labeled "bug" or "help wanted" would be fantastic, just drop a comment and feel free to ask for help!
 
-If there's anything you want to work on that isn't already an issue, either open a feature request or get in touch on the [forum](https://forum.atuin.sh)/Discord. 
+If there's anything you want to work on that isn't already an issue, either open a feature request or get in touch on the [forum](https://forum.atuin.sh)/Discord.
 
 ## Setup
 
@@ -61,6 +67,50 @@ While iterating on the server, I find it helpful to run a new user on my system,
 
 Our test coverage is currently not the best, but we are working on it! Generally tests live in the file next to the functionality they are testing, and are executed just with `cargo test`.
 
+## Logging and Debugging
+
+### Log Files
+
+Atuin writes logs to `~/.atuin/logs` unless configured otherwise. Log files are rotated daily and retained for 4 days by default:
+
+- `search.log.*` - Interactive search session logs
+- `daemon.log.*` - Background daemon logs
+
+### Log Levels
+
+You can set the `ATUIN_LOG` environment variable to override log verbosity from the config file:
+
+```shell
+ATUIN_LOG=debug atuin search  # Enable debug logging
+ATUIN_LOG=trace atuin search  # Enable trace logging (very verbose)
+```
+
+### Span Timing (Performance Profiling)
+
+For performance analysis, you can capture detailed span timing data as JSON:
+
+```shell
+ATUIN_SPAN=spans.json atuin search
+```
+
+This creates a JSON file with timing information for each instrumented span, including:
+- `time.busy` - Time actively executing code
+- `time.idle` - Time awaiting async operations (I/O, child tasks)
+
+The `scripts/span-table.ts` script analyzes these logs:
+
+```shell
+# Summary view - shows all spans with timing stats
+bun scripts/span-table.ts spans.json
+
+# Detail view - shows individual calls for a specific span
+bun scripts/span-table.ts spans.json --detail daemon_search
+
+# Filter to specific spans
+bun scripts/span-table.ts spans.json --filter "search|hydrate"
+```
+
+This is useful for comparing performance between different search implementations or identifying bottlenecks.
 
 ## Migrations
 
@@ -68,4 +118,4 @@ Be careful creating database migrations - once your database has migrated ahead 
 
 ### Stickers
 
-We try to ship anyone contributing to Atuin a sticker! Only contributors get a shiny one. Fill out [this form](https://notionforms.io/forms/contributors-stickers) if you'd like one.
+We try to ship anyone contributing to Atuin a sticker! Only contributors get a shiny one. Fill out [this form](https://noteforms.com/forms/contributors-stickers) if you'd like one.
