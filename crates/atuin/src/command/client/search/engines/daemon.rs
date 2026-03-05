@@ -85,7 +85,7 @@ impl Search {
     async fn hydrate_from_db(&self, db: &dyn Database, ids: &[String]) -> Result<Vec<History>> {
         let placeholders: Vec<String> = ids.iter().map(|id| format!("'{id}'")).collect();
         let sql_query = format!(
-            "SELECT * FROM history WHERE id IN ({}) ORDER BY timestamp DESC",
+            "SELECT * FROM history WHERE id IN ({}) AND deleted_at IS NULL ORDER BY timestamp DESC",
             placeholders.join(",")
         );
         Ok(db.query_history(&sql_query).await?)

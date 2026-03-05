@@ -4,6 +4,8 @@ use std::{
 };
 
 use atuin_common::{shell::Shell, utils::Escapable as _};
+#[cfg(feature = "daemon")]
+use atuin_daemon::emit_event;
 use eyre::Result;
 use futures_util::FutureExt;
 use semver::Version;
@@ -1493,23 +1495,64 @@ pub async fn history(
                                 if results.is_empty() {
                                     break;
                                 }
-                                app.results_len -= 1;
-                                let selected = app.results_state.selected();
-                                if selected == app.results_len {
-                                    app.inspecting_state.reset();
-                                    app.results_state.select(selected - 1);
+
+                                let Some(entry) = results.get(index).cloned() else {
+                                    break;
+                                };
+
+                                // Delete every history entry with the same command text.
+                                let escaped_command = entry.command.replace('\'', "''");
+                                let matched_entries = db
+                                    .query_history(
+                                        format!(
+                                            "select * from history where command = '{}' and deleted_at is null",
+                                            escaped_command
+                                        )
+                                        .as_str(),
+                                    )
+                                    .await?;
+
+                                let mut deleted_ids = Vec::with_capacity(matched_entries.len());
+                                let mut record_ids = Vec::new();
+
+                                for matched in matched_entries {
+                                    deleted_ids.push(matched.id.clone());
+
+                                    // Always delete from local history DB so deletion is persistent.
+                                    db.delete(matched.clone()).await?;
+
+                                    // If records sync is enabled, also write tombstones.
+                                    if settings.sync.records {
+                                        let (record_id, _) = history_store.delete(matched.id).await?;
+                                        record_ids.push(record_id);
+                                    }
                                 }
 
-                                let entry = results.remove(index);
+                                if settings.sync.records && !record_ids.is_empty() {
+                                    history_store.incremental_build(&db, &record_ids).await?;
+                                }
 
-                                if settings.sync.records {
-                                    let (id, _) = history_store.delete(entry.id).await?;
-                                    history_store.incremental_build(&db, &[id]).await?;
+                                results.retain(|h| h.command != entry.command);
+                                app.results_content = results.clone();
+                                app.results_len = results.len();
+                                app.inspecting_state.reset();
+
+                                if app.results_len == 0 {
+                                    app.results_state.select(0);
                                 } else {
-                                    db.delete(entry.clone()).await?;
+                                    app.results_state
+                                        .select(app.results_state.selected().min(app.results_len - 1));
                                 }
 
-                                app.tab_index  = 0;
+                                #[cfg(feature = "daemon")]
+                                if !deleted_ids.is_empty() {
+                                    let _ = emit_event(atuin_daemon::DaemonEvent::HistoryDeleted {
+                                        ids: deleted_ids,
+                                    })
+                                    .await;
+                                }
+
+                                app.tab_index = 0;
                             },
                             InputAction::SwitchContext(index) => {
                                 if let Some(index) = index && let Some(entry) = results.get(index) {

@@ -296,7 +296,7 @@ pub fn default_vim_normal_keymap(settings: &Settings) -> Keymap {
 
     // --- Half/full page scroll ---
     km.bind(key("ctrl-u"), Action::ScrollHalfPageUp);
-    km.bind(key("ctrl-d"), Action::ScrollHalfPageDown);
+    km.bind(key("ctrl-d"), Action::Delete);
     km.bind(key("ctrl-b"), Action::ScrollPageUp);
     km.bind(key("ctrl-f"), Action::ScrollPageDown);
 
@@ -646,23 +646,17 @@ mod tests {
     }
 
     #[test]
-    fn emacs_ctrl_d_empty_returns_original() {
+    fn emacs_ctrl_d_deletes_selected_history() {
         let km = default_emacs_keymap(&default_settings());
-        // input empty (byte_len = 0)
-        let ctx = make_ctx(0, 0, 0, 10);
-        assert_eq!(
-            km.resolve(&key("ctrl-d"), &ctx),
-            Some(Action::ReturnOriginal)
-        );
-    }
+        // input empty
+        let ctx_empty = make_ctx(0, 0, 0, 10);
+        assert_eq!(km.resolve(&key("ctrl-d"), &ctx_empty), Some(Action::Delete));
 
-    #[test]
-    fn emacs_ctrl_d_nonempty_deletes() {
-        let km = default_emacs_keymap(&default_settings());
-        let ctx = make_ctx(2, 5, 0, 10);
+        // input non-empty
+        let ctx_nonempty = make_ctx(2, 5, 0, 10);
         assert_eq!(
-            km.resolve(&key("ctrl-d"), &ctx),
-            Some(Action::DeleteCharAfter)
+            km.resolve(&key("ctrl-d"), &ctx_nonempty),
+            Some(Action::Delete)
         );
     }
 
@@ -833,11 +827,7 @@ mod tests {
     fn vim_insert_inherits_emacs_ctrl_d() {
         let km = default_vim_insert_keymap(&default_settings());
         let ctx = make_ctx(0, 0, 0, 10);
-        // input empty → return original
-        assert_eq!(
-            km.resolve(&key("ctrl-d"), &ctx),
-            Some(Action::ReturnOriginal)
-        );
+        assert_eq!(km.resolve(&key("ctrl-d"), &ctx), Some(Action::Delete));
     }
 
     // -- Inspector keymap tests --
