@@ -122,6 +122,8 @@ pub fn default_emacs_keymap(settings: &Settings) -> Keymap {
         km.bind_conditional(
             key("right"),
             vec![
+                // Keep legacy behavior: right on empty input fills input from selected command.
+                KeyRule::when(ConditionAtom::InputEmpty, Action::CursorRight),
                 KeyRule::when(ConditionAtom::CursorAtEnd, Action::ReturnSelection),
                 KeyRule::always(Action::CursorRight),
             ],
@@ -130,26 +132,23 @@ pub fn default_emacs_keymap(settings: &Settings) -> Keymap {
         km.bind(key("right"), Action::CursorRight);
     }
 
-    // left: behavior at start of line
+    // left: behavior at start of line (plus legacy empty-input accept)
+    let mut left_rules = Vec::new();
+    if settings.keys.accept_past_line_end {
+        left_rules.push(KeyRule::when(ConditionAtom::InputEmpty, Action::ReturnSelection));
+    }
     // accept_past_line_start takes precedence over exit_past_line_start
     if settings.keys.accept_past_line_start {
-        km.bind_conditional(
-            key("left"),
-            vec![
-                KeyRule::when(ConditionAtom::CursorAtStart, Action::ReturnSelection),
-                KeyRule::always(Action::CursorLeft),
-            ],
-        );
+        left_rules.push(KeyRule::when(ConditionAtom::CursorAtStart, Action::ReturnSelection));
     } else if settings.keys.exit_past_line_start {
-        km.bind_conditional(
-            key("left"),
-            vec![
-                KeyRule::when(ConditionAtom::CursorAtStart, Action::Exit),
-                KeyRule::always(Action::CursorLeft),
-            ],
-        );
-    } else {
+        left_rules.push(KeyRule::when(ConditionAtom::CursorAtStart, Action::Exit));
+    }
+
+    if left_rules.is_empty() {
         km.bind(key("left"), Action::CursorLeft);
+    } else {
+        left_rules.push(KeyRule::always(Action::CursorLeft));
+        km.bind_conditional(key("left"), left_rules);
     }
 
     // down/up: scroll with optional exit at boundary.
@@ -160,15 +159,17 @@ pub fn default_emacs_keymap(settings: &Settings) -> Keymap {
     bind_scroll_key(&mut km, "down", Action::SelectNext, !invert, scroll_exits);
     bind_scroll_key(&mut km, "up", Action::SelectPrevious, invert, scroll_exits);
 
-    // backspace: behavior at start of line
-    if settings.keys.accept_with_backspace {
-        km.bind_conditional(
-            key("backspace"),
-            vec![
-                KeyRule::when(ConditionAtom::CursorAtStart, Action::ReturnSelection),
-                KeyRule::always(Action::DeleteCharBefore),
-            ],
-        );
+    // backspace: behavior at start of line (plus legacy empty-input accept)
+    if settings.keys.accept_with_backspace || settings.keys.accept_past_line_end {
+        let mut rules = Vec::new();
+        if settings.keys.accept_past_line_end {
+            rules.push(KeyRule::when(ConditionAtom::InputEmpty, Action::ReturnSelection));
+        }
+        if settings.keys.accept_with_backspace {
+            rules.push(KeyRule::when(ConditionAtom::CursorAtStart, Action::ReturnSelection));
+        }
+        rules.push(KeyRule::always(Action::DeleteCharBefore));
+        km.bind_conditional(key("backspace"), rules);
     } else {
         km.bind(key("backspace"), Action::DeleteCharBefore);
     }
@@ -216,14 +217,8 @@ pub fn default_emacs_keymap(settings: &Settings) -> Keymap {
     km.bind(key("ctrl-?"), Action::DeleteCharBefore);
     km.bind(key("ctrl-delete"), Action::DeleteWordAfter);
     km.bind(key("delete"), Action::DeleteCharAfter);
-    // ctrl-d: if input empty → return original, otherwise delete char
-    km.bind_conditional(
-        key("ctrl-d"),
-        vec![
-            KeyRule::when(ConditionAtom::InputEmpty, Action::ReturnOriginal),
-            KeyRule::always(Action::DeleteCharAfter),
-        ],
-    );
+    // ctrl-d: delete selected history entry in search mode
+    km.bind(key("ctrl-d"), Action::Delete);
     km.bind(key("ctrl-w"), Action::DeleteToWordBoundary);
     km.bind(key("ctrl-u"), Action::ClearLine);
 
@@ -376,6 +371,7 @@ pub fn default_inspector_keymap(settings: &Settings) -> Keymap {
 
     // Inspector-specific: delete history entry
     km.bind(key("ctrl-d"), Action::Delete);
+    km.bind(key("d"), Action::Delete);
 
     // Inspector navigation
     km.bind(key("up"), Action::InspectPrevious);

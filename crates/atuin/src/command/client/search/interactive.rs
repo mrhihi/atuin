@@ -431,8 +431,20 @@ impl State {
                 InputAction::Continue
             }
             Action::CursorRight => {
-                self.search.input.right();
-                InputAction::Continue
+                // Keep legacy behavior: when input is empty, right fills the input
+                // with the currently selected command.
+                if self.tab_index == 0 && self.search.input.as_str().is_empty() {
+                    let selected_result = self.results_state.selected();
+                    if let Some(result) = self.results_content.get(selected_result) {
+                        for c in result.command.chars() {
+                            self.search.input.insert(c);
+                        }
+                    }
+                    InputAction::Continue
+                } else {
+                    self.search.input.right();
+                    InputAction::Continue
+                }
             }
             Action::CursorWordLeft => {
                 self.search
@@ -1946,12 +1958,12 @@ mod tests {
             "Tab should always accept"
         );
 
-        // Test left arrow with accept_past_line_start disabled (should continue)
+        // Test left arrow with empty input and accept_past_line_end enabled (should accept)
         let left_event = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
         let result = state.handle_key_input(&settings, &left_event);
         assert!(
-            matches!(result, super::InputAction::Continue),
-            "Left arrow should continue when disabled"
+            matches!(result, super::InputAction::Accept(_)),
+            "Left arrow should accept on empty input when accept_past_line_end is enabled"
         );
 
         // Test left arrow with accept_past_line_start enabled (should accept at start of line)
@@ -1968,8 +1980,8 @@ mod tests {
         let backspace_event = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
         let result = state.handle_key_input(&settings, &backspace_event);
         assert!(
-            matches!(result, super::InputAction::Continue),
-            "Backspace should continue when disabled"
+            matches!(result, super::InputAction::Accept(_)),
+            "Backspace should accept on empty input when accept_past_line_end is enabled"
         );
 
         settings.keys.accept_with_backspace = true;
@@ -2029,6 +2041,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len: 100,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::VimNormal,
             prefix: false,
@@ -2088,6 +2101,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len: 100,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::VimNormal,
             prefix: false,
@@ -2143,6 +2157,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len: 100,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::VimNormal,
             prefix: false,
@@ -2194,6 +2209,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len: 100,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::VimNormal,
             prefix: false,
@@ -2254,6 +2270,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len: 100,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::VimNormal,
             prefix: false,
@@ -2315,6 +2332,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::Emacs,
             prefix: false,
@@ -2675,6 +2693,27 @@ mod tests {
     }
 
     #[test]
+    fn execute_cursor_right_on_empty_input_fills_from_selected_result() {
+        use crate::command::client::search::keybindings::Action;
+
+        let mut state = make_executor_state(1, 0);
+        state.results_content = vec![
+            History::capture()
+                .timestamp(time::OffsetDateTime::now_utc())
+                .command("echo hello")
+                .cwd("/")
+                .build()
+                .into(),
+        ];
+
+        let settings = Settings::utc();
+        let result = state.execute_action(&Action::CursorRight, &settings);
+
+        assert!(matches!(result, super::InputAction::Continue));
+        assert_eq!(state.search.input.as_str(), "echo hello");
+    }
+
+    #[test]
     fn keymap_config_return_query() {
         use atuin_client::settings::KeyBindingConfig;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -2694,6 +2733,7 @@ mod tests {
             switched_search_mode: false,
             search_mode: SearchMode::Fuzzy,
             results_len: 100,
+            results_content: Vec::new(),
             accept: false,
             keymap_mode: KeymapMode::Emacs,
             prefix: false,
