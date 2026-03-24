@@ -11,7 +11,7 @@ for arg in "$@"; do
 done
 
 if [ "$ATUIN_NON_INTERACTIVE" != "yes" ]; then
-  if [ -t 0 ] || [ -c /dev/tty ]; then
+  if [ -t 0 ] || { true </dev/tty; } 2>/dev/null; then
     ATUIN_NON_INTERACTIVE="no"
   else
     ATUIN_NON_INTERACTIVE="yes"
@@ -148,6 +148,10 @@ else
   echo "  atuin import auto       Import your existing shell history"
   echo "  atuin register          Sign up for a sync account"
   echo "  atuin login             Log in to an existing sync account"
+fi
+
+if [ "$ATUIN_NON_INTERACTIVE" != "yes" ]; then
+  "$ATUIN_BIN" setup </dev/tty
 fi
 
 cat << EOF
