@@ -46,9 +46,6 @@ __atuin_install_binary(){
 if ! command -v curl > /dev/null; then
     echo "curl not installed. Please install curl."
     exit
-elif ! command -v sed > /dev/null; then
-    echo "sed not installed. Please install sed."
-    exit
 fi
 
 
@@ -71,22 +68,44 @@ if ! grep -q "atuin init bash" ~/.bashrc; then
 fi
 
 if [ -f "$HOME/.config/fish/config.fish" ]; then
-  # Check if the line already exists to prevent duplicates
   if ! grep -q "atuin init fish" "$HOME/.config/fish/config.fish"; then
-        # Detect BSD or GNU sed
-        if sed --version >/dev/null 2>&1; then
-          # GNU
-          sed -i '/if status is-interactive/,/end/ s/end$/    atuin init fish | source\
-end/' "$HOME/.config/fish/config.fish"
-        else
-          # BSD (macOS)
-          sed -i '' '/if status is-interactive/,/end/ s/end$/    atuin init fish | source\
-end/' "$HOME/.config/fish/config.fish"
-        fi
-    fi
+    printf '\nif status is-interactive\n    atuin init fish | source\nend\n' >> "$HOME/.config/fish/config.fish"
+  fi
 fi
 
 ATUIN_BIN="$HOME/.atuin/bin/atuin"
+
+__atuin_install_agent_hook(){
+  agent="$1"
+  agent_name="$2"
+  agent_config_dir="$3"
+  shift 3
+
+  detected="no"
+
+  if [ -d "$agent_config_dir" ]; then
+    detected="yes"
+  else
+    for agent_command in "$@"; do
+      if command -v "$agent_command" > /dev/null 2>&1; then
+        detected="yes"
+        break
+      fi
+    done
+  fi
+
+  if [ "$detected" = "yes" ]; then
+    echo "Detected $agent_name — installing Atuin hooks..."
+    if ! "$ATUIN_BIN" hook install "$agent"; then
+      echo "Failed to install Atuin hooks for $agent_name (this version of Atuin may not support it yet)."
+    fi
+    echo ""
+  fi
+}
+
+__atuin_install_agent_hook "claude-code" "Claude Code" "$HOME/.claude" claude
+__atuin_install_agent_hook "codex" "Codex" "$HOME/.codex" codex
+__atuin_install_agent_hook "pi" "pi" "$HOME/.config/pi" pi
 
 echo ""
 echo "Atuin installed successfully!"
