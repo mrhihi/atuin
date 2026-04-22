@@ -1931,32 +1931,6 @@ pub async fn history(
                                 app.inspecting_state.reset();
                                 app.tab_index = 0;
                             },
-                            InputAction::DeleteAllMatching(index) => {
-                                if results.is_empty() {
-                                    break;
-                                }
-
-                                let command = results[index].command.clone();
-
-                                // Remove matching entries from the visible results
-                                results.retain(|e| e.command != command);
-
-                                // Query the DB for ALL entries with this command and delete them
-                                let all_matching = db.query_history(
-                                    &format!(
-                                        "select * from history where command = '{}' and deleted_at is null",
-                                        command.replace('\'', "''")
-                                    )
-                                ).await?;
-
-                                let ids = history_store.delete_entries(all_matching).await?;
-                                history_store.incremental_build(&db, &ids).await?;
-
-                                app.results_len = results.len();
-                                app.results_state = ListState::default();
-                                app.inspecting_state.reset();
-                                app.tab_index = 0;
-                            },
                             InputAction::SwitchContext(index) => {
                                 if let Some(index) = index && let Some(entry) = results.get(index) {
                                     app.search.custom_context = Some(entry.id.clone());
